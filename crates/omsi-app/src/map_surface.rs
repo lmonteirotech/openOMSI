@@ -266,7 +266,13 @@ impl MapSurface {
     /// The map folder's package, or None when there is none or it cannot be used (one line
     /// in the log says why; the map then shows as it always did).
     pub fn open(map_dir: &Path) -> Option<MapSurface> {
-        let dir = map_dir.join(FOLDER);
+        // the package sits in the map's own folder, or in the same place of another content root (a
+        // package for a map one does not own goes into the game's content folder, as a mod does: the
+        // OMSI 2 installation is never written to); the root with the most priority wins
+        let dir = omsi_cfg::mirrored_dirs(map_dir)
+            .into_iter()
+            .map(|d| d.join(FOLDER))
+            .find(|d| omsi_cfg::vfs::is_file(&d.join("manifest.cfg")))?;
         let manifest = omsi_cfg::vfs::read(&dir.join("manifest.cfg")).ok()?;
         let text = String::from_utf8_lossy(&manifest).into_owned();
         let (mut format, mut grid) = (0u32, 0.0f64);

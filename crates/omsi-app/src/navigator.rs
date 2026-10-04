@@ -621,6 +621,17 @@ impl Navigator {
         self.global_version += 1;
     }
 
+    /// The map's package, given at once (an offscreen picture reads it on its own thread).
+    pub fn set_surface(&mut self, surface: Option<crate::map_surface::MapSurface>) {
+        if let Some(s) = surface {
+            let mut labels = s.labels();
+            labels.sort_by(|a, b| b.rank.cmp(&a.rank));
+            self.surface_labels = labels;
+            self.surface = Some(std::sync::Arc::new(s));
+            self.surface_version += 1;
+        }
+    }
+
     /// The places of every object on the map (stops beyond the loaded tiles), once read.
     pub fn places(&self) -> Option<&HashMap<i64, DVec3>> {
         self.global.as_ref().map(|_| &*self.stop_pos)
@@ -1016,13 +1027,7 @@ impl Navigator {
             if let Ok((net, pos, streets, surface)) = rx.try_recv() {
                 log::info!("navigator: the map's road network is there ({} lanes, {} streets named)", net.lanes.len(), streets.names.len());
                 self.streets = Some(std::sync::Arc::new(streets));
-                if let Some(s) = surface {
-                    let mut labels = s.labels();
-                    labels.sort_by(|a, b| b.rank.cmp(&a.rank));
-                    self.surface_labels = labels;
-                    self.surface = Some(std::sync::Arc::new(s));
-                    self.surface_version += 1;
-                }
+                self.set_surface(surface);
                 self.global = Some(std::sync::Arc::new(net));
                 self.stop_pos = std::sync::Arc::new(pos);
                 self.global_version += 1;

@@ -2617,6 +2617,7 @@ pub(crate) fn run_offscreen(
                 nav.add_lanes(world.lanes.lock().clone());
             }
             nav.set_map(world.navigation_map());
+            nav.set_surface(crate::map_surface::MapSurface::open(&world.map_dir));
             let (line, terminus, stops, trip) = navigator::duty_parts(duty.as_ref());
             if let (Some((key, name)), Some(sch)) = (trip, schedule.as_ref()) {
                 let lanes = sch.trip_route_in(nav.map_net().unwrap(), &name);
