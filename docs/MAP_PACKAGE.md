@@ -141,6 +141,8 @@ openOMSI only reads. The files are made beforehand by the map author's own tools
 author has (OpenStreetMap, a GIS, a hand-made map): the format asks for nothing but the files of
 section 1, so any source and any tool will do.
 
+A real package to read next to this page is in [examples/map-package](examples/map-package/).
+
 ## 8. What the package carries besides the surface
 
 openOMSI already shows the trip's route, the next stops with times, the distance to the next
