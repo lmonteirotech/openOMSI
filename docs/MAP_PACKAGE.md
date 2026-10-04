@@ -33,6 +33,9 @@ One folder, with a fixed name and fixed file names, inside the map's own folder 
 Rules:
 - The folder is `openomsi-realmap` and the files carry the names above. A file that is missing is the
   feature that is off, never an error. No `manifest.cfg`: the package is ignored.
+- The folder may be in the map's own folder or in the same place of another content root: a package for a map
+  one does not own goes in the game's content folder (`Maps/<Map>/openomsi-realmap/`), as a mod does, so the OMSI 2
+  installation is never written to. The root with the most priority wins.
 - The package is read only by openOMSI. Omsi.exe ignores the folder, so a map made for both
   games loses nothing and the folder can ship inside the map's own download.
 - Paths inside `manifest.cfg` are relative to the `openomsi-realmap` folder.
@@ -141,7 +144,9 @@ openOMSI only reads. The files are made beforehand by the map author's own tools
 author has (OpenStreetMap, a GIS, a hand-made map): the format asks for nothing but the files of
 section 1, so any source and any tool will do.
 
-A real package to read next to this page is in [examples/map-package](examples/map-package/).
+Two real packages to read next to this page: [examples/map-package-spandau](examples/map-package-spandau/) is made from
+OpenStreetMap for the stock map Berlin-Spandau, so anyone can try it, and its README (with the script that made it)
+documents how; [examples/map-package](examples/map-package/) is for the map RMG Leste.
 
 ## 8. What the package carries besides the surface
 
