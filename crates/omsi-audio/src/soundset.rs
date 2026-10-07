@@ -37,12 +37,28 @@ struct RuntimeSound {
     last_gain: f32,
     /// The buffer's playback rate relative to the clip, as last taken by `SetFrequency`.
     last_pitch: f32,
+    /// The loudest the curves have made a triggered entry since its trigger fired: Omsi.exe
+    /// never lets such a sound get quieter while it plays (`TSound` +0x2c, reset when the
+    /// trigger fires, peak hold @0x7507bc), so a door sound whose curve follows the door keeps
+    /// its tail when the door stops (#473, #611, #1268, #1311).
+    peak: f32,
 }
 
 impl RuntimeSound {
     fn new(def: SoundEntry, clip: Option<Arc<Clip>>) -> RuntimeSound {
-        RuntimeSound { def, clip, voice: None, held: false, active_since: None, last_gain: 1.0, last_pitch: 1.0 }
+        RuntimeSound { def, clip, voice: None, held: false, active_since: None, last_gain: 1.0, last_pitch: 1.0, peak: 0.0 }
     }
+}
+
+/// A triggered entry's volume this frame (the entry's volume times its curves): never below
+/// what it has been since its trigger fired (`fired`: this frame, which forgets the old peak).
+fn peak_hold(peak: &mut f32, vol: f32, fired: bool) -> f32 {
+    if fired {
+        *peak = 0.0;
+    }
+    let v = vol.max(*peak);
+    *peak = v;
+    v
 }
 
 pub struct SoundSet {
@@ -307,7 +323,7 @@ impl SoundSet {
             s.clip = Some(clip.clone());
             s.last_gain = 1.0;
             s.last_pitch = 1.0;
-            let e = ctx.eval(s, var, object_to_world);
+            let e = ctx.eval(s, var, object_to_world, true);
             if e.audible && !e.wrong_view {
                 s.voice = Some(engine.play(clip.clone(), ctx.params(s, &e, false, object_to_world)));
             }
@@ -425,8 +441,8 @@ impl SoundSet {
             };
             let fired = fired_by.is_some();
             let e = match fired_by {
-                Some(t) => ctx.eval(s, &|n| at_fire(t, n).or_else(|| var(n)), object_to_world),
-                None => ctx.eval(s, var, object_to_world),
+                Some(t) => ctx.eval(s, &|n| at_fire(t, n).or_else(|| var(n)), object_to_world, true),
+                None => ctx.eval(s, var, object_to_world, false),
             };
             if e.wrong_view {
                 // "Stopped Sound ... globalstop/wrongview"
@@ -560,7 +576,7 @@ impl SoundSet {
                 if !s.def.triggers.is_empty() || Self::conditions_hold(&s.def, var) {
                     s.active_since.get_or_insert_with(|| std::time::Instant::now() - std::time::Duration::from_secs(5));
                 }
-                let e = ctx.eval(s, var, object_to_world);
+                let e = ctx.eval(s, var, object_to_world, true);
                 let dist = s
                     .def
                     .pos
@@ -607,7 +623,11 @@ impl Ctx {
 
     /// One entry this frame (`TSound` update 0x750340): its volume and pitch as DirectSound
     /// takes them, and whether it can be started.
-    fn eval(&self, s: &mut RuntimeSound, var: &dyn Fn(&str) -> Option<f32>, object_to_world: &Mat4) -> Eval {
+    ///
+    /// `fired`: the entry's trigger fired this frame. A triggered entry's volume (after its
+    /// curves, before distance and the cab's share of outside sound) never falls below its
+    /// peak since then ([`peak_hold`]).
+    fn eval(&self, s: &mut RuntimeSound, var: &dyn Fn(&str) -> Option<f32>, object_to_world: &Mat4, fired: bool) -> Eval {
         let def = &s.def;
         if !self.view_lets_through(def.viewpoint) {
             return Eval { gain: 0.0, audible: false, pitch: s.last_pitch, wrong_view: true };
@@ -633,6 +653,9 @@ impl Ctx {
             if let Some(x) = SoundSet::curve_input(vc, var, active, facing) {
                 vol *= curve(&vc.points, x);
             }
+        }
+        if triggered {
+            vol = peak_hold(&mut s.peak, vol, fired);
         }
         // `[3d]`: full up to the range, then range / distance
         let dist_gain = pos.map(|p| crate::mixer::distance_gain(def.range, (p - self.listener).length()));
@@ -716,7 +739,7 @@ mod tests {
 
     fn eval(c: &Ctx, def: SoundEntry, var: &dyn Fn(&str) -> Option<f32>) -> Eval {
         let mut s = RuntimeSound::new(def, None);
-        c.eval(&mut s, var, &Mat4::IDENTITY)
+        c.eval(&mut s, var, &Mat4::IDENTITY, false)
     }
 
     #[test]
@@ -791,12 +814,12 @@ mod tests {
         let def = SoundEntry { volume: 1.0, is_loop: true, sample_rate: 44100.0, pitch_variable: "n".into(), pitch_ref: 1000.0, ..Default::default() };
         let mut s = RuntimeSound::new(def, Some(Arc::new(Clip { sample_rate: 44100, channels: 1, samples: vec![0; 4] })));
         let c = ctx(1, false);
-        let e = c.eval(&mut s, &|_| Some(1.0), &Mat4::IDENTITY);
+        let e = c.eval(&mut s, &|_| Some(1.0), &Mat4::IDENTITY, false);
         assert!(!e.audible, "44 Hz");
-        let e = c.eval(&mut s, &|_| Some(2000.0), &Mat4::IDENTITY);
+        let e = c.eval(&mut s, &|_| Some(2000.0), &Mat4::IDENTITY, false);
         assert!(e.audible && (e.pitch - 2.0).abs() < 1e-4);
         // 6 x 44100 = 264 600 Hz: refused, the rate stays at 2x
-        let e = c.eval(&mut s, &|_| Some(6000.0), &Mat4::IDENTITY);
+        let e = c.eval(&mut s, &|_| Some(6000.0), &Mat4::IDENTITY, false);
         assert!(e.audible && (e.pitch - 2.0).abs() < 1e-4, "{}", e.pitch);
     }
 
@@ -818,6 +841,41 @@ mod tests {
         assert_eq!(eval(&ctx(2, true), hit.clone(), &fired).gain, 1.0);
         let set = SoundSet { sounds: vec![RuntimeSound::new(hit, None)], master: 1.0, dir: Default::default(), inside: true, ai: false, listener_vehicle: true, muffled: false, parts: Vec::new() };
         assert_eq!(set.curve_triggers(), vec!["ev_doorhitclose_0".to_string()]);
+    }
+
+    /// A door sound whose curve follows the door: fired with the door at 1, the door closed
+    /// the next frame - Omsi.exe holds the peak (0x7507bc), so the sound keeps its tail
+    /// (#473, #611, #1268, #1311).
+    #[test]
+    fn a_triggered_sound_keeps_its_peak_while_it_plays() {
+        let door = |at: f32| move |n: &str| (n == "door").then_some(at);
+        let entry = |triggers: Vec<String>| SoundEntry {
+            volume: 1.0,
+            triggers,
+            vol_curves: vec![VolCurve { variable: "door".into(), points: vec![(0.0, 0.0), (1.0, 1.0)] }],
+            ..Default::default()
+        };
+        let c = ctx(2, true);
+        let mut s = RuntimeSound::new(entry(vec!["ev_door".into()]), None);
+        let e = c.eval(&mut s, &door(0.7), &Mat4::IDENTITY, true);
+        assert!((e.gain - 0.7).abs() < 1e-3, "{}", e.gain);
+        // the door stops: the curve reads 0, the sound does not get quieter
+        let e = c.eval(&mut s, &door(0.0), &Mat4::IDENTITY, false);
+        assert!((e.gain - 0.7).abs() < 1e-3 && e.audible, "{}", e.gain);
+        // a louder moment raises the peak
+        let e = c.eval(&mut s, &door(1.0), &Mat4::IDENTITY, false);
+        assert!((e.gain - 1.0).abs() < 1e-3, "{}", e.gain);
+        // fired again quieter: the old peak is forgotten
+        let e = c.eval(&mut s, &door(0.3), &Mat4::IDENTITY, true);
+        assert!((e.gain - 0.3).abs() < 1e-3, "{}", e.gain);
+        // heard from the wrong view it stays silent and keeps no peak
+        let mut cab = RuntimeSound::new(SoundEntry { viewpoint: 2, ..entry(vec!["ev_door".into()]) }, None);
+        assert!(ctx(1, false).eval(&mut cab, &door(1.0), &Mat4::IDENTITY, true).wrong_view);
+        assert_eq!(cab.peak, 0.0);
+        // an entry without a trigger follows its curve, up and down (the engine's loops)
+        let mut lp = RuntimeSound::new(entry(Vec::new()), None);
+        assert!((c.eval(&mut lp, &door(0.7), &Mat4::IDENTITY, false).gain - 0.7).abs() < 1e-3);
+        assert_eq!(c.eval(&mut lp, &door(0.0), &Mat4::IDENTITY, false).gain, 0.0);
     }
 
     /// The stock IBIS announces Spandau's "Falkenseer Ch/Stadtrandstr" with the file
