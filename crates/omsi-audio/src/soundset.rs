@@ -535,7 +535,10 @@ impl SoundSet {
                     "no clip".into()
                 };
             } else if !ctx.view_lets_through(s.def.viewpoint) {
-                why = format!("viewpoint {} (listener {})", s.def.viewpoint, ctx.view);
+                why = format!("viewpoint {} (listener {}, Snd_OutsideVol {:.2})", s.def.viewpoint, ctx.view, outside_vol());
+            } else if s.def.pos.is_some() && s.def.range <= 0.0 {
+                // (`min(range / distance, 1)` is 0 at any distance but 0 - #1515)
+                why = "[3d] range 0: silent anywhere but at its position".into();
             } else if let Some(c) = s
                 .def
                 .conditions
@@ -553,7 +556,9 @@ impl SoundSet {
             }
             let playing = s.voice.and_then(|id| engine.voice_state(id));
             match (playing, why.is_empty()) {
-                (Some((p, heard)), _) => out.push(format!("{file}: {heard:.3} heard, pitch {:.2}", p.pitch)),
+                (Some((p, heard)), _) => {
+                    out.push(format!("{file}: {heard:.3} heard, pitch {:.2}, viewpoint {}", p.pitch, s.def.viewpoint))
+                }
                 (None, true) => out.push(format!("{file}: ready, silent")),
                 (None, false) => out.push(format!("{file}: off - {why}")),
             }
@@ -828,7 +833,95 @@ mod tests {
         assert_eq!(eval(&ctx(1, false), engine_out.clone(), &none).lowpass_hz, 0.0);
         assert_eq!(eval(&ctx(4, false), SoundEntry { volume: 0.5, viewpoint: 4, ..Default::default() }, &none).lowpass_hz, 0.0);
         MUFFLE_OUTSIDE.store(false, std::sync::atomic::Ordering::Relaxed);
+        viewpoint_matrix(&none);
         set_outside_open(None);
+    }
+
+    /// What `[viewpoint]` lets through, for every value of a stock `sound.cfg` (none or 0, 1,
+    /// 2, 3, 5) and the 4 the bit model also has, from every view (1 the player's bus seen
+    /// from outside, 2 from its cab, 4 another vehicle) and with the bus shut
+    /// (`Snd_OutsideVol` 0) or open (0.5): the entry's volume is 1, `None` is silent.
+    ///
+    /// `2` is the cab alone, `3` the player's two views, `5` the outside and other vehicles,
+    /// as the `omsi-sound-cfg` reference has them. Two things go beyond it, both meant:
+    /// * an entry without `[viewpoint]` (or `0`, which 46 stock entries say) is heard in
+    ///   every view, other vehicles included, not only as a `3`;
+    /// * an outside entry (`1`, `5`, and `4`, which no stock vehicle uses) is heard in the
+    ///   cab at `Snd_OutsideVol` while the bus is open - the SD200's exterior engine - and a
+    ///   twin pair, `2` for the cab and `5` for outside, then plays twice there (#1470).
+    ///
+    /// Called from `the_cab_hears_outside_through_what_is_open`: `Snd_OutsideVol` is global.
+    fn viewpoint_matrix(none: &dyn Fn(&str) -> Option<f32>) {
+        // (view, listener's camera in a cab, vp, expected factor at Snd_OutsideVol 0 and 0.5)
+        type Row = (i32, bool, i32, Option<f32>, Option<f32>);
+        let table: [Row; 24] = [
+            (1, false, 0, Some(1.0), Some(1.0)),
+            (1, false, 1, Some(1.0), Some(1.0)),
+            (1, false, 2, None, None),
+            (1, false, 3, Some(1.0), Some(1.0)),
+            (1, false, 4, None, None),
+            (1, false, 5, Some(1.0), Some(1.0)),
+            (2, true, 0, Some(1.0), Some(1.0)),
+            (2, true, 1, None, Some(0.5)),
+            (2, true, 2, Some(1.0), Some(1.0)),
+            (2, true, 3, Some(1.0), Some(1.0)),
+            (2, true, 4, None, Some(0.5)),
+            (2, true, 5, None, Some(0.5)),
+            (4, false, 0, Some(1.0), Some(1.0)),
+            (4, false, 1, None, None),
+            (4, false, 2, None, None),
+            (4, false, 3, None, None),
+            (4, false, 4, Some(1.0), Some(1.0)),
+            (4, false, 5, Some(1.0), Some(1.0)),
+            (4, true, 0, Some(0.2), Some(0.7)),
+            (4, true, 1, None, None),
+            (4, true, 2, None, None),
+            (4, true, 3, None, None),
+            (4, true, 4, Some(0.2), Some(0.7)),
+            (4, true, 5, Some(0.2), Some(0.7)),
+        ];
+        for (open, pick) in [(0.0, 0usize), (0.5, 1)] {
+            set_outside_open(Some(open));
+            for &(view, cab, vp, shut, opened) in &table {
+                let want = if pick == 0 { shut } else { opened };
+                let e = eval(&ctx(view, cab), SoundEntry { volume: 1.0, viewpoint: vp, ..Default::default() }, none);
+                match want {
+                    None => assert!(e.wrong_view, "view {view} cab {cab} viewpoint {vp} at {open}: heard"),
+                    Some(f) => {
+                        assert!(!e.wrong_view, "view {view} cab {cab} viewpoint {vp} at {open}: silenced");
+                        assert!((e.gain - f).abs() < 1e-3, "view {view} cab {cab} viewpoint {vp} at {open}: {}", e.gain);
+                    }
+                }
+            }
+        }
+    }
+
+    /// An engine, its fan and its telemetry read the same variable (`engine_n`, #1418): each
+    /// entry takes its own volume from it, none gets in another's way.
+    #[test]
+    fn sounds_that_read_the_same_variable_all_play() {
+        let entry = |points: Vec<(f32, f32)>| SoundEntry {
+            volume: 1.0,
+            vol_curves: vec![VolCurve { variable: "engine_n".into(), points }],
+            ..Default::default()
+        };
+        let engine_n = |n: &str| (n == "engine_n").then_some(1000.0);
+        let c = ctx(1, false);
+        let engine = eval(&c, entry(vec![(0.0, 0.0), (1000.0, 1.0)]), &engine_n);
+        let fan = eval(&c, entry(vec![(0.0, 0.0), (2000.0, 1.0)]), &engine_n);
+        let telemetry = eval(&c, entry(vec![(0.0, 1.0), (3000.0, 1.0)]), &engine_n);
+        assert!(engine.audible && fan.audible && telemetry.audible);
+        assert!((engine.gain - 1.0).abs() < 1e-3 && (fan.gain - 0.5).abs() < 1e-3 && (telemetry.gain - 1.0).abs() < 1e-3);
+    }
+
+    /// A `[3d]` sound is full up to its range and falls as range / distance beyond it: with
+    /// a range of 0 nothing is left at any distance (the game once made it 5 m, #1515).
+    #[test]
+    fn a_3d_sound_with_no_range_is_silent_away_from_its_position() {
+        let at = |range: f32| SoundEntry { volume: 1.0, pos: Some([10.0, 0.0, 0.0]), range, ..Default::default() };
+        assert!(!eval(&ctx(1, false), at(0.0), &|_| None).audible);
+        assert!(eval(&ctx(1, false), at(5.0), &|_| None).audible);
+        assert!(eval(&ctx(1, false), SoundEntry { volume: 1.0, ..Default::default() }, &|_| None).audible, "without [3d]: everywhere");
     }
 
     #[test]
