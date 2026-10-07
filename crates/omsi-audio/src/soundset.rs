@@ -172,6 +172,9 @@ struct Eval {
     pitch: f32,
     /// `[viewpoint]` (or the global stop) silences it: a playing voice is stopped.
     wrong_view: bool,
+    /// Cut-off (Hz) of the low-pass the voice is played through, 0 for none: an outside
+    /// sound heard in a cab with the `muffle_outside` setting on (see [`MUFFLE_OUTSIDE`]).
+    lowpass_hz: f32,
 }
 
 impl SoundSet {
@@ -630,7 +633,7 @@ impl Ctx {
     fn eval(&self, s: &mut RuntimeSound, var: &dyn Fn(&str) -> Option<f32>, object_to_world: &Mat4, fired: bool) -> Eval {
         let def = &s.def;
         if !self.view_lets_through(def.viewpoint) {
-            return Eval { gain: 0.0, audible: false, pitch: s.last_pitch, wrong_view: true };
+            return Eval { gain: 0.0, audible: false, pitch: s.last_pitch, wrong_view: true, lowpass_hz: 0.0 };
         }
         let triggered = !def.triggers.is_empty();
         let pos = def.pos.map(|p| object_to_world.transform_point3(Vec3::from_array(p)));
@@ -663,12 +666,15 @@ impl Ctx {
             vol *= g;
         }
         // an AI vehicle (view 4) heard from a cab: through the player's bus's bodywork
+        let mut lowpass_hz = 0.0;
         if self.view & 4 != 0 && self.cab {
             vol *= 0.2 + outside_vol();
+            lowpass_hz = muffled_cutoff();
         }
         // the player's bus's outside sound heard in its cab: through what is open
         if def.viewpoint & 2 == 0 && def.viewpoint != 0 && self.view == 2 {
             vol *= outside_vol();
+            lowpass_hz = muffled_cutoff();
         }
         let (gain, audible) = direct_sound_volume(vol, s.last_gain);
         s.last_gain = gain;
@@ -689,7 +695,7 @@ impl Ctx {
             Some(_) => 0.0,
             None => gain,
         };
-        Eval { gain, audible, pitch, wrong_view: false }
+        Eval { gain, audible, pitch, wrong_view: false, lowpass_hz }
     }
 
     fn params(&self, s: &RuntimeSound, e: &Eval, looping: bool, object_to_world: &Mat4) -> VoiceParams {
@@ -703,7 +709,7 @@ impl Ctx {
             // keeps its file's rate)
             doppler: self.doppler && s.def.is_loop,
             range: s.def.range,
-            lowpass_hz: 0.0,
+            lowpass_hz: e.lowpass_hz,
             important: s.def.important,
         }
     }
@@ -726,6 +732,23 @@ pub fn set_outside_open(v: Option<f32>) {
 
 fn outside_vol() -> f32 {
     f32::from_bits(OUTSIDE_VOL.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The `muffle_outside` setting (#1497): the sounds of outside the bus heard from a cab -
+/// other vehicles' and the player's bus's own outside sounds - are played through a low-pass,
+/// as the game did before it computed sound as Omsi.exe does (which has no filter, so it is
+/// off by default).
+pub static MUFFLE_OUTSIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Cut-off (Hz) of that low-pass, 0 with the setting off: 450 Hz with the bus shut, up to 7.2
+/// kHz with doors or the driver's window open (`Snd_OutsideVol` 0.5), where the outside comes
+/// in unfiltered.
+fn muffled_cutoff() -> f32 {
+    if MUFFLE_OUTSIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        450.0 * (1.0 + 30.0 * outside_vol().clamp(0.0, 0.5))
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
@@ -786,7 +809,25 @@ mod tests {
         // the player's bus heard from the street on an AI bus: never
         assert!(eval(&ctx(4, false), SoundEntry { volume: 1.0, viewpoint: 1, ..Default::default() }, &none).wrong_view);
         let cab = SoundEntry { volume: 0.8, viewpoint: 2, ..Default::default() };
-        assert!(eval(&ctx(1, false), cab, &none).wrong_view, "a cab sound stays in");
+        assert!(eval(&ctx(1, false), cab.clone(), &none).wrong_view, "a cab sound stays in");
+        // the low-pass of the `muffle_outside` setting (#1497): off, nothing is filtered
+        assert_eq!(eval(&ctx(4, true), SoundEntry { volume: 0.5, viewpoint: 4, ..Default::default() }, &none).lowpass_hz, 0.0);
+        assert_eq!(eval(&ctx(2, true), engine_out.clone(), &none).lowpass_hz, 0.0);
+        MUFFLE_OUTSIDE.store(true, std::sync::atomic::Ordering::Relaxed);
+        // on: outside sounds heard in the cab - 450 Hz shut, 7.2 kHz with the doors open
+        set_outside_open(Some(0.5));
+        assert!((eval(&ctx(2, true), engine_out.clone(), &none).lowpass_hz - 7200.0).abs() < 1.0);
+        assert!((eval(&ctx(4, true), SoundEntry { volume: 0.5, viewpoint: 4, ..Default::default() }, &none).lowpass_hz - 7200.0).abs() < 1.0);
+        set_outside_open(Some(0.01));
+        assert!((eval(&ctx(4, true), SoundEntry { volume: 0.5, viewpoint: 4, ..Default::default() }, &none).lowpass_hz - 585.0).abs() < 1.0);
+        // never what belongs to the cab or what plays everywhere (the indicator relay), nor
+        // anything heard from outside
+        assert_eq!(eval(&ctx(2, true), cab, &none).lowpass_hz, 0.0);
+        assert_eq!(eval(&ctx(2, true), SoundEntry { volume: 0.8, ..Default::default() }, &none).lowpass_hz, 0.0);
+        assert_eq!(eval(&ctx(2, true), SoundEntry { volume: 0.8, viewpoint: 3, ..Default::default() }, &none).lowpass_hz, 0.0);
+        assert_eq!(eval(&ctx(1, false), engine_out.clone(), &none).lowpass_hz, 0.0);
+        assert_eq!(eval(&ctx(4, false), SoundEntry { volume: 0.5, viewpoint: 4, ..Default::default() }, &none).lowpass_hz, 0.0);
+        MUFFLE_OUTSIDE.store(false, std::sync::atomic::Ordering::Relaxed);
         set_outside_open(None);
     }
 
