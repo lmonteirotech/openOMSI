@@ -19,7 +19,7 @@ impl Launcher {
     /// one when that is what the player chose, and on a computer hand over to the new
     /// launcher once it is in place.
     pub(super) fn update_tick(&mut self, event_loop: &ActiveEventLoop) {
-        let looking = self.setting("update_check", true) && omsi_cfg::env::var_os("OMSI_NO_UPDATE").is_none();
+        let looking = self.setting("update_check", true) && !omsi_cfg::flags::OMSI_NO_UPDATE.is_set();
         if !self.update.checked_once && self.started.elapsed().as_secs_f32() > 1.0 {
             if looking {
                 self.update.check();

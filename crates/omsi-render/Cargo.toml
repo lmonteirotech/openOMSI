@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "wgpu renderer: textured, lit meshes with OMSI alpha modes; on-screen and off-screen targets"
 
+[features]
+default = ["test-hooks"]
+# The fault-injection hook OMSI_FAKE_GPU_ERROR (see docs/DEBUG_FLAGS.md); a build without
+# it cannot be made to fail on purpose.
+test-hooks = []
+
 [dependencies]
 omsi-cfg = { path = "../omsi-cfg" }
 omsi-geometry = { path = "../omsi-geometry" }

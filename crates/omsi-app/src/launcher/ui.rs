@@ -64,10 +64,26 @@ pub struct Input {
     pub alt: bool,
     /// A key as it was pressed (for binding keys): winit's code name.
     pub raw_key: Option<winit::keyboard::KeyCode>,
+    /// Binding modifiers at key press, independent of later releases before redraw.
+    pub raw_chord: i32,
     pub double_click: bool,
     /// The wheel is a finger dragged over the screen: it scrolls, it never turns a slider or
     /// a time field under the finger.
     pub touch: bool,
+}
+
+impl Input {
+    pub fn capture_key(&mut self, code: winit::keyboard::KeyCode) {
+        // A modifier alone is not a binding. Do not let a later modifier event
+        // overwrite a letter already waiting for the controls page.
+        if Modifiers::bit(code).is_some() { return; }
+        self.raw_key = Some(code);
+        self.raw_chord = omsi_content::input::chord(self.shift, self.ctrl, self.alt);
+    }
+
+    pub fn binding_modifiers(&self) -> i32 {
+        self.raw_chord
+    }
 }
 
 /// Shift, Ctrl, Alt and the logo key as the launcher knows them. The window says when they
@@ -163,8 +179,12 @@ impl Popup {
     /// The options shown (their places in `options`): those with the typed text in them.
     fn shown(&self) -> Vec<usize> {
         let q = self.query.to_lowercase();
-        (0..self.options.len()).filter(|&k| q.is_empty() || self.options[k].to_lowercase().contains(&q)).collect()
+        (0..self.options.len()).filter(|&k| q.is_empty() || matches(&self.options[k], &q)).collect()
     }
+}
+
+pub fn matches(text: &str, q: &str) -> bool {
+    text.to_lowercase().contains(q) || omsi_ui::tr(text).to_lowercase().contains(q)
 }
 
 /// A calendar dropdown for a date field.
@@ -1085,18 +1105,26 @@ impl Ui {
         self.draw_popup();
         self.draw_date_popup();
         if let Some((t, at)) = self.tooltip.take() {
-            let w = (self.width(&t, 12.5, Weight::Medium) + 20.0).min(360.0);
-            let h = self.paragraph_height(&t, w - 20.0, 12.5, Weight::Medium) + 12.0;
-            let mut r = Rect::new(at.x + 14.0, at.y + 18.0, w, h);
-            if r.right() > self.size.x - 8.0 {
-                r.x = self.size.x - 8.0 - r.w;
-            }
-            if r.bottom() > self.size.y - 8.0 {
-                r.y = at.y - 12.0 - r.h;
-            }
+            let w = (self.width(&t, 12.5, Weight::Medium) + 20.0).min(360.0).min((self.size.x - 16.0).max(1.0));
+            let text_w = (w - 20.0).max(1.0);
+            let max_h = (self.size.y - 16.0).clamp(1.0, 280.0);
+            let h = (self.paragraph_height(&t, text_w, 12.5, Weight::Medium) + 12.0).min(max_h);
+            let x = (at.x + 14.0).clamp(8.0, (self.size.x - w - 8.0).max(8.0));
+            let below = at.y + 18.0;
+            let above = at.y - 12.0 - h;
+            let y = if below + h <= self.size.y - 8.0 {
+                below
+            } else if above >= 8.0 {
+                above
+            } else {
+                (self.size.y - h - 8.0).max(8.0)
+            };
+            let r = Rect::new(x, y, w, h);
             self.p().rounded(r, 6.0, Color::rgba(34, 34, 34, 1.0));
             self.p().rounded_border(r, 7.0, 1.0, Color::WHITE.alpha(0.1));
-            self.paragraph(&t, Vec2::new(r.x + 10.0, r.y + 4.0), w - 20.0, 12.5, Weight::Medium, TEXT_SOFT);
+            self.push_clip(Rect::new(r.x + 10.0, r.y + 4.0, text_w, (h - 8.0).max(0.0)), 2.0);
+            self.paragraph(&t, Vec2::new(r.x + 10.0, r.y + 4.0), text_w, 12.5, Weight::Medium, TEXT_SOFT);
+            self.pop_clip();
         }
         let mut layers = Vec::new();
         let mut verts = Vec::new();
@@ -1135,6 +1163,7 @@ impl Ui {
         self.input.text.clear();
         self.input.keys.clear();
         self.input.raw_key = None;
+        self.input.raw_chord = 0;
         self.input.double_click = false;
     }
 
@@ -1455,6 +1484,45 @@ mod tests {
         assert!(!input.shift && input.ctrl && !input.alt);
     }
 
+    #[test]
+    fn binding_keeps_modifiers_when_released_before_redraw() {
+        use winit::keyboard::{KeyCode as K, ModifiersState as M};
+        for held in [M::SHIFT, M::CONTROL, M::ALT, M::SHIFT | M::CONTROL | M::ALT] {
+            let mut m = Modifiers::default();
+            let mut input = Input::default();
+            m.told(held);
+            m.apply(&mut input);
+            // KeyboardInput presses A; ModifiersChanged releases the chord before redraw.
+            input.capture_key(K::KeyA);
+            m.told(M::empty());
+            m.apply(&mut input);
+            assert_eq!(input.raw_key, Some(K::KeyA));
+            assert_eq!(input.binding_modifiers(), omsi_content::input::chord(
+                held.shift_key(), held.control_key(), held.alt_key()));
+        }
+    }
+
+    #[test]
+    fn binding_snapshot_uses_fallback_keys_and_does_not_leak_into_next_binding() {
+        use winit::keyboard::KeyCode as K;
+        let mut m = Modifiers::default();
+        let mut ui = Ui::new();
+        for key in [K::ShiftRight, K::ControlLeft, K::AltRight] { m.key(key, true); }
+        m.apply(&mut ui.input);
+        ui.input.capture_key(K::KeyA);
+        for key in [K::ShiftRight, K::ControlLeft, K::AltRight] { m.key(key, false); }
+        m.apply(&mut ui.input);
+        ui.input.capture_key(K::ShiftLeft);
+        assert_eq!(ui.input.raw_key, Some(K::KeyA));
+        assert_eq!(ui.input.binding_modifiers(), omsi_content::input::KEY_SHIFT |
+            omsi_content::input::KEY_CTRL | omsi_content::input::KEY_ALT);
+        ui.discard_input();
+        assert_eq!(ui.input.binding_modifiers(), 0);
+        ui.input.capture_key(K::KeyB);
+        assert_eq!(ui.input.raw_key, Some(K::KeyB));
+        assert_eq!(ui.input.binding_modifiers(), 0);
+    }
+
     /// What was clicked and typed while the launcher drew nothing (a game ran) is gone:
     /// the first frame drawn afterwards pressed the button under the mouse, Start again.
     #[test]
@@ -1483,7 +1551,7 @@ mod tests {
         let mut ui = Ui::new();
         let mut sel = 0;
         let field = Rect::new(20.0, 20.0, 240.0, 30.0);
-        let mut frame = |ui: &mut Ui, sel: &mut usize| {
+        let frame = |ui: &mut Ui, sel: &mut usize| {
             ui.begin(Vec2::new(800.0, 600.0), 1.0, 1.0 / 60.0);
             ui.select("n", field, sel, &options);
             ui.finish();
@@ -1559,7 +1627,7 @@ mod tests {
         let mut ui = Ui::new();
         let mut sel = 0;
         let field = Rect::new(20.0, 20.0, 240.0, 30.0);
-        let mut frame = |ui: &mut Ui, sel: &mut usize| {
+        let frame = |ui: &mut Ui, sel: &mut usize| {
             ui.begin(Vec2::new(800.0, 600.0), 1.0, 1.0 / 60.0);
             let changed = ui.select("n", field, sel, &options);
             ui.finish();

@@ -482,15 +482,18 @@ mod line_tests {
 #[cfg(test)]
 mod stock_line_tests {
     use super::*;
+    include!("../../../tools/test-support/original_root.rs");
 
     /// Every line of the stock maps reads back the same after it is written.
     #[test]
+    #[ignore = "needs the original OMSI 2 install (OMSI_ROOT)"]
     fn stock_lines_round_trip() {
-        let maps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../OMSI 2 Original/maps");
+        let maps = original_root().join("maps");
         let mut n = 0;
         for m in ["Grundorf", "Berlin-Spandau"] {
             let d = maps.join(m).join("TTData");
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            require_content(&[&d]);
+            let rd = std::fs::read_dir(&d).unwrap();
             for e in rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("ttl"))) {
                 let l = Line::load(&e.path()).unwrap();
                 let back = Line::parse(&CfgFile::from_str(e.path(), &l.to_text()));

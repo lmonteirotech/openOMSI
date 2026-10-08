@@ -386,7 +386,7 @@ pub struct AudioEngine {
 }
 
 fn muted() -> bool {
-    omsi_cfg::env::var_os("OMSI_MUTE").is_some()
+    omsi_cfg::flags::OMSI_MUTE.is_set()
 }
 
 /// Read and decode a clip (any thread).

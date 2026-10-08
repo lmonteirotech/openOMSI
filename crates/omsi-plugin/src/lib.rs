@@ -26,6 +26,7 @@
 //! Wine elsewhere). The frame is one round trip.
 
 pub mod lua;
+pub mod ui;
 
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -461,14 +462,14 @@ impl HostConfig {
     /// The host next to the running program and, off Windows, `wine` from the path.
     pub fn detect() -> HostConfig {
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        let host32 = std::env::var_os("OMSI_PLUGIN_HOST32")
+        let host32 = omsi_cfg::flags::OMSI_PLUGIN_HOST32.live_os()
             .map(PathBuf::from)
             .or_else(|| exe_dir.map(|d| d.join("omsi-plugin-host32.exe")))
             .filter(|p| p.is_file());
         let runner = if cfg!(windows) {
             None
         } else {
-            std::env::var_os("OMSI_WINE").map(PathBuf::from).or_else(|| {
+            omsi_cfg::flags::OMSI_WINE.live_os().map(PathBuf::from).or_else(|| {
                 // the path, then where Homebrew and the Wine app bundles put it (a game
                 // started from Finder gets a path without /opt/homebrew/bin)
                 let from_path: Vec<PathBuf> = std::env::var_os("PATH")
@@ -683,8 +684,9 @@ pub trait PluginIo {
         false
     }
     /// What happened in the game since the last plugin frame, each sent to Lua plugins as an
-    /// event (`crash`, `pedestrian`, `stops_skipped`): things `omsi.info()` cannot show, as
-    /// they are over before a plugin could look. Every plugin of the frame gets them all.
+    /// event (`crash`, `pedestrian`, `stops_skipped`, `service`, `trip_done`, `jolt`,
+    /// `ticket_sold`): things `omsi.info()` cannot show, as they are over before a plugin
+    /// could look. Every plugin of the frame gets them all.
     fn events(&self) -> Vec<GameEvent> {
         Vec::new()
     }
@@ -724,6 +726,8 @@ pub struct Plugins {
     pub loaded: Vec<Plugin>,
     /// The Lua plugins (`plugins/*.lua`, `plugins/<name>/main.lua`).
     pub lua: Vec<lua::LuaPlugin>,
+    /// What the Lua plugins show on the screen (`omsi.ui`), for the game to draw.
+    pub ui: ui::SharedUi,
 }
 
 impl Plugins {
@@ -748,6 +752,7 @@ impl Plugins {
             }
         }
         let mut lua = Vec::new();
+        let ui = ui::SharedUi::default();
         let mut seen = std::collections::HashSet::new();
         for dir in dirs {
             for path in lua::find_lua(dir) {
@@ -755,7 +760,7 @@ impl Plugins {
                 if !seen.insert(key) {
                     continue;
                 }
-                match lua::LuaPlugin::load(&path, &mut lua::NoVehicle) {
+                match lua::LuaPlugin::load_with_ui(&path, &mut lua::NoVehicle, ui.clone()) {
                     Ok(p) => {
                         log::info!("Lua plugin {} loaded ({})", p.name, path.display());
                         lua.push(p);
@@ -764,7 +769,7 @@ impl Plugins {
                 }
             }
         }
-        Plugins { loaded, lua }
+        Plugins { loaded, lua, ui }
     }
 
     pub fn is_empty(&self) -> bool {

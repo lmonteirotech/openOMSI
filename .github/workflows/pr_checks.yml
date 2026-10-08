@@ -48,3 +48,13 @@ jobs:
           pip install --quiet pyyaml
           git show "$BASE:$LOCALES" > "$RUNNER_TEMP/app.base.yml" 2>/dev/null || : > "$RUNNER_TEMP/app.base.yml"
           python3 .github/scripts/check_locales.py "$RUNNER_TEMP/app.base.yml" "$LOCALES"
+
+  # No Rust file and no function may grow past its recorded size (+5 %), and new ones stay
+  # under 1500 / 300 lines: scripts/size-budget.sh, baseline in scripts/size-budget.txt.
+  size-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: File and function sizes
+        run: bash scripts/size-budget.sh

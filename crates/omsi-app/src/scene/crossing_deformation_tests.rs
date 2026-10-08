@@ -338,3 +338,47 @@ fn ordinary_split_object_keeps_full_view_distance() {
         );
     }
 }
+
+// A backdrop card can start at its placement and run far out from there (HafenCity's
+// `3_BG_niederbaum`, 1.6 km of the far bank of the Elbe). Its materials, drawn without
+// the depth test or depth writes, tell it from an ordinary long model of the same size.
+#[test]
+fn backdrop_card_from_its_origin_is_a_stand_in() {
+    let fixture = Fixture::new();
+    fixture.write("global.cfg", "[name]
+Artificial harbour
+");
+    fixture.write("card.x", &strip(&[(0.0, 0.0), (800.0, 30.0), (1600.0, 0.0)]));
+    fixture.write(
+        "backdrop.sco",
+        "[mesh]
+card.x
+[matl]
+harbour.dds
+0
+[matl_alpha]
+2
+[matl_noZcheck]
+",
+    );
+    fixture.write("pier.sco", "[mesh]
+card.x
+[matl]
+harbour.dds
+0
+");
+    let world = World::open(&fixture.0, &fixture.0.join("global.cfg"), 20261008).unwrap();
+    let backdrop = world.object_type("backdrop.sco").unwrap();
+    let pier = world.object_type("pier.sco").unwrap();
+    let tile = (-6, -4);
+    let ts = tile_size();
+    let expected = Some([-7.0 * ts, -5.0 * ts, -4.0 * ts, -2.0 * ts]);
+    for heading in [0.0, 37.0, 90.0] {
+        let xf = object_rotation([heading, 0.0, 0.0]);
+        let pos = DVec3::new(-1515.0, -914.0, 0.0);
+        assert_eq!(stand_in_area(&backdrop, &xf, pos, tile), expected,
+            "a backdrop card at heading {heading} keeps to the tiles around its own");
+        assert_eq!(stand_in_area(&pier, &xf, pos, tile), None,
+            "an ordinary model of the same size keeps the far view at heading {heading}");
+    }
+}

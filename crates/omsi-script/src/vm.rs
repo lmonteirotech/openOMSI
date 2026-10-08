@@ -506,7 +506,7 @@ fn exec_cold(s: &mut Stacks, op: &Op, p: &Program, state: &mut State, host: &mut
 /// (a model going wrong shows up as NaN far from where it started).
 fn debug_nan() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("OMSI_DEBUG_NAN").is_some())
+    *ON.get_or_init(|| omsi_cfg::flags::OMSI_DEBUG_NAN.live_os().is_some())
 }
 
 /// `$StrToFloat`: a number, or -1 when the text is none. Scripts test for that: the chura

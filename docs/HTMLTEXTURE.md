@@ -56,6 +56,15 @@ Note: An `[htmlTexture]` is registered as a `[scriptTexture]`, but it is also re
 This means: If an `htmlTexture` follows `scriptTexture 6`, the `htmlTexture` is automatically `scriptTexture 7`. But it
 is not `htmlTexture 7`.
 
+### LED destination signs
+
+A page drawn on an LED matrix is lit like the Krueger and K++ panels in Enhanced when its
+material has a dot mask and a white light map: either the `\S:n` mask above, or a plain
+picture of the dots as `[matl_transmap]` (black between the dots), with a `[matl_lightmap]`
+that is white all over. The lit dots then burn at the `LED glow` setting's brightness and
+bloom. A page's sign keeps that brightness at night even where it sits inside the cab
+(behind a coach's windscreen); a script texture's panel in the cab (a dashboard's LCD) dims.
+
 ### Html file
 
 `html\index.html` is the relative path from the bus path. Example: `Data\Vehicles\MAN_NewLionsCity\html\index.html` =

@@ -20,6 +20,8 @@
 use crate::humans::{Humans, MirrorPose};
 use crate::scene::World;
 use crate::traffic::Traffic;
+use crate::view_sync::people::PeopleView;
+use crate::view_sync::SimView;
 use crate::Args;
 use glam::{DVec2, DVec3, Vec3};
 use hashbrown::{HashMap, HashSet};
@@ -336,11 +338,12 @@ impl LanWorld {
         scene: Option<&mut Scene>,
         traffic: Option<&mut Traffic>,
         humans: Option<&mut Humans>,
+        view: &mut SimView,
         me: Option<DVec3>,
     ) {
         if !self.trace_opened {
             self.trace_opened = true;
-            self.trace = omsi_cfg::env::var("OMSI_LAN_TRACE").ok().and_then(|p| {
+            self.trace = omsi_cfg::flags::OMSI_LAN_TRACE.var().and_then(|p| {
                 std::fs::File::create(p)
                     .ok()
                     .map(std::io::BufWriter::new)
@@ -352,12 +355,12 @@ impl LanWorld {
                 self.departed = world.map(|w| w.departed_keys()).unwrap_or_default();
                 self.host(lan, dt, args, traffic, humans.as_deref_mut(), me);
                 if let (Some(w), Some(r), Some(sc), Some(h)) = (world, renderer, scene, humans) {
-                    self.people_from_clients(lan, w, r, sc, h);
+                    self.people_from_clients(lan, w, r, sc, h, &mut view.people);
                 }
             }
             Role::Client => {
                 let mut humans = humans;
-                self.client(lan, dt, args, world, renderer, scene, traffic, humans.as_deref_mut());
+                self.client(lan, dt, args, world, renderer, scene, traffic, humans.as_deref_mut(), view);
                 if let (Some(h), Some(me)) = (humans, me) {
                     self.people_to_host(lan, dt, h, me);
                 }
@@ -480,6 +483,7 @@ impl LanWorld {
         renderer: &Renderer,
         scene: &mut Scene,
         h: &mut Humans,
+        view: &mut PeopleView,
     ) {
         // (claims of our bus for somebody a client sent: not ours to give)
         let _ = h.take_claims();
@@ -559,7 +563,7 @@ impl LanWorld {
                 }
                 let local = self.next_up_id;
                 self.next_up_id += 1;
-                if h.mirror_add(world, renderer, scene, local, ty, &pose) {
+                if h.mirror_add(view, world, renderer, scene, local, ty, &pose) {
                     up.ids.insert(*pid, local);
                 }
             }
@@ -588,6 +592,13 @@ impl LanWorld {
         let centers: Vec<DVec3> = players.iter().map(|p| p.1).collect();
         if let Some(t) = traffic.as_deref_mut() {
             t.lan_centers = centers.clone();
+            // and what they see: no car may come or go there in front of them either
+            // (the list is kept: no allocation a frame)
+            t.lan_eyes.clear();
+            t.lan_eyes.extend(lan.peers().filter(|p| p.has_pose && p.pose.has_vehicle()).map(|p| {
+                let at = DVec3::new(p.pose.x, p.pose.y, p.pose.z);
+                crate::traffic::Viewer::lan_player(at, p.pose.heading as f64)
+            }));
         }
         if let Some(h) = humans.as_deref_mut() {
             h.lan_centers = centers;
@@ -869,7 +880,7 @@ impl LanWorld {
             view.bytes += n as u64;
         }
         self.log_t -= dt;
-        if self.log_t <= 0.0 && omsi_cfg::env::var_os("OMSI_DEBUG_LAN").is_some() {
+        if self.log_t <= 0.0 && omsi_cfg::flags::OMSI_DEBUG_LAN.is_set() {
             self.log_t = 4.0;
             for (peer, up) in &self.ups {
                 let aboard = up.tracks.values().filter(|t| t.samples.last().map(|s| matches!(s.v.place, PersonPlace::Aboard { .. })).unwrap_or(false)).count();
@@ -906,6 +917,7 @@ impl LanWorld {
         scene: Option<&mut Scene>,
         mut traffic: Option<&mut Traffic>,
         mut humans: Option<&mut Humans>,
+        view: &mut SimView,
     ) {
         let (Some(world), Some(renderer), Some(scene)) = (world, renderer, scene) else {
             return;
@@ -916,7 +928,7 @@ impl LanWorld {
         if want_on != m.on {
             m.on = want_on;
             if let Some(t) = traffic.as_deref_mut() {
-                t.set_mirror(world, renderer, scene, want_on);
+                t.set_mirror(&mut view.traffic, world, renderer, scene, want_on);
             }
             if let Some(h) = humans.as_deref_mut() {
                 h.set_mirror(want_on);
@@ -1058,7 +1070,7 @@ impl LanWorld {
                 .filter(|id| !m.cars.contains_key(id))
                 .collect();
             for id in gone {
-                t.remove_car(world, renderer, scene, id as u64);
+                t.remove_car(&mut view.traffic, world, renderer, scene, id as u64);
                 m.drawn_cars.remove(&id);
                 m.shown.remove(&id);
                 m.odometer.remove(&id);
@@ -1112,6 +1124,7 @@ impl LanWorld {
                     continue;
                 };
                 t.add_mirror_car(
+                    &mut view.traffic,
                     world,
                     renderer,
                     scene,
@@ -1210,6 +1223,8 @@ impl LanWorld {
                                 at_station: c.at_station as i32,
                                 at_station_side: sides.get(i).copied().unwrap_or(0.0),
                                 priority_warning: false,
+                                // (the host's buses' engines are not on the wire: running)
+                                engine_off: false,
                             },
                         )
                     })
@@ -1307,7 +1322,7 @@ impl LanWorld {
                 let Some(ty) = h.type_by_file(file) else {
                     continue;
                 };
-                if h.mirror_add(world, renderer, scene, *id, ty, &pose) {
+                if h.mirror_add(&mut view.people, world, renderer, scene, *id, ty, &pose) {
                     m.drawn_people.insert(*id);
                 }
             }
@@ -1336,7 +1351,7 @@ impl LanWorld {
             }
         }
         self.log_t -= dt;
-        if self.log_t <= 0.0 && omsi_cfg::env::var_os("OMSI_DEBUG_LAN").is_some() {
+        if self.log_t <= 0.0 && omsi_cfg::flags::OMSI_DEBUG_LAN.is_set() {
             self.log_t = 4.0;
             let m = &mut self.mirror;
             let ids_hash = m
@@ -1467,12 +1482,9 @@ fn describe_car(args: &Args, c: &crate::traffic::AiCar) -> Desc {
     Desc::Car {
         id: c.id as u32,
         file: relative_file(&c.vehicle.ty.def.path, &args.root),
-        scheme: c
-            .render
-            .set
-            .as_ref()
-            .and_then(|k| k.1)
-            .map(|s| s.min(255) as u8),
+        // (the paint scheme it is drawn with: a host's cars are all its own, never a LAN
+        // mirror's, whose `scheme` is unset)
+        scheme: c.scheme.map(|s| s.min(255) as u8),
         line,
         destination,
     }

@@ -23,7 +23,6 @@
 const CLOUD_BOTTOM: f32 = 1400.0;
 const CLOUD_TOP: f32 = 2800.0;
 const EARTH_R: f32 = 6371000.0;
-const CLOUD_STEPS: i32 = 56;
 // Extinction per metre of the densest cloud.
 const CLOUD_SIGMA: f32 = 0.035;
 const CLOUD_SHAPE_PERIOD: f32 = 13000.0;
@@ -137,7 +136,9 @@ fn cloud_layer(d: vec3<f32>, below: vec3<f32>, pix: f32) -> vec4<f32> {
         return vec4<f32>(below, 0.0);
     }
     let t1 = min(cloud_shell(d, CLOUD_TOP), min(t0 + 12000.0, CLOUD_MAX_DIST + 6000.0));
-    let ds = (t1 - t0) / f32(CLOUD_STEPS);
+    // (the march's steps: `CLOUD_STEPS` in lib.rs, fewer with the low cloud quality)
+    let steps = max(i32(enh.eye.w), 1);
+    let ds = (t1 - t0) / f32(steps);
     // how many texels of the shape map a pixel spans where the ray meets the clouds
     let lod = log2(max(t0 * pix * f32(textureDimensions(t_cloud_shape).x) / CLOUD_SHAPE_PERIOD, 1.0));
     // (the sun before the clouds - at their own height, through the air from up there:
@@ -151,7 +152,7 @@ fn cloud_layer(d: vec3<f32>, below: vec3<f32>, pix: f32) -> vec4<f32> {
     var hit = 0.0;
     var hit_w = 0.0;
     var t = t0 + ds * cloud_jitter;
-    for (var i = 0; i < CLOUD_STEPS; i = i + 1) {
+    for (var i = 0; i < steps; i = i + 1) {
         let p = vec3<f32>(cloud_ground(d, t), cloud_height(d, t));
         let h = (p.z - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM);
         let sigma = cloud_sigma(p, h, coverage, lod, true);
@@ -247,6 +248,10 @@ fn sky_radiance(d: vec3<f32>, pix: f32) -> vec3<f32> {
 
 @fragment
 fn fs_enhanced(in: VsOut) -> @location(0) vec4<f32> {
+    return enhanced_sky(in);
+}
+
+fn enhanced_sky(in: VsOut) -> vec4<f32> {
     let d = normalize(in.dir);
     let pre = enh.exposure.x;
     // the cube is drawn from its own eye (lib.rs Probe::cube_eye): look the clouds' base up
@@ -279,6 +284,34 @@ fn fs_enhanced(in: VsOut) -> @location(0) vec4<f32> {
     // it is drawn from its light (fog_lamps.wgsl `sun_glare`), and from the disc's pixels
     // as well the glow would have counted it twice
     return vec4<f32>(min(col * pre, vec3<f32>(4000.0)) + min(sun_px * pre, vec3<f32>(24.0)), 1.0);
+}
+
+// The mirrors of an Enhanced picture are drawn with the plain shading (lib.rs, the cost of
+// the enhanced shader in a small picture), but their sky is this one, tone-mapped here
+// with the window's curve (post.wgsl `natural_tone`): the plain envir.cfg sky showed a blue
+// dusk in the mirrors over the window's grey one, or the other way round (#1754, #1449).
+// The meter's correction is left out (by day a few tenths of a stop at most).
+fn mirror_tone(color: vec3<f32>, contrast: f32) -> vec3<f32> {
+    let knee = 0.66;
+    let x = max(color, vec3<f32>(0.0));
+    let y = 0.18 * pow(x / 0.18 + vec3<f32>(1e-7), vec3<f32>(contrast));
+    let peak = max(y.r, max(y.g, y.b));
+    if (peak <= knee) {
+        return y;
+    }
+    let d = 1.0 - knee;
+    let shoulder = vec3<f32>(knee) + d * (vec3<f32>(1.0) - exp(-(y - vec3<f32>(knee)) / d));
+    let soft = select(y, shoulder, y > vec3<f32>(knee));
+    let np = knee + d * (1.0 - exp(-(peak - knee) / d));
+    let o = mix(y * (np / peak), soft, 0.4);
+    let g = 1.0 - 1.0 / (0.3 * (peak - np) + 1.0);
+    return mix(o, vec3<f32>(np), g);
+}
+
+@fragment
+fn fs_enhanced_mirror(in: VsOut) -> @location(0) vec4<f32> {
+    let hdr = enhanced_sky(in).rgb;
+    return vec4<f32>(clamp(mirror_tone(hdr, max(enh.debug.w, 1.0)), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
 
 fn star_hash(c: vec3<i32>) -> vec4<f32> {

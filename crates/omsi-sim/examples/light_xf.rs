@@ -2,7 +2,7 @@
 //! [light_enh] coronas land). usage: light_xf <content folder> <bus>
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let root = std::path::PathBuf::from(std::env::var("OMSI_ROOT").unwrap());
+    let root = std::path::PathBuf::from(omsi_cfg::flags::OMSI_ROOT.live_var().unwrap());
     omsi_cfg::add_content_root(std::path::PathBuf::from(&a[1]));
     omsi_cfg::add_content_root(root.clone());
     let path = omsi_cfg::resolve_path(std::path::Path::new(&a[1]), &a[2]);

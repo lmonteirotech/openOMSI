@@ -36,7 +36,7 @@ pub(crate) fn is_omsi_root(p: &Path) -> bool {
 pub(crate) fn fatal_dialog(title: &str, text: &str) {
     log::error!("{title}: {text}");
     // started from a terminal (the message is right there) or by a test harness
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) || omsi_cfg::env::var_os("OMSI_BACKGROUND").is_some() {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) || omsi_cfg::flags::OMSI_BACKGROUND.is_set() {
         return;
     }
     #[cfg(target_os = "macos")]
@@ -100,7 +100,7 @@ pub(crate) fn own_bindings(root: &Path, modifier: i32) -> std::collections::Hash
 }
 
 pub(crate) fn content_dir() -> Option<PathBuf> {
-    if let Some(d) = omsi_cfg::env::var_os("OMSI_CONTENT") {
+    if let Some(d) = omsi_cfg::flags::OMSI_CONTENT.os() {
         return Some(PathBuf::from(d));
     }
     let exe = std::env::current_exe().ok()?;
@@ -140,7 +140,7 @@ pub(crate) fn root_memo() -> Option<PathBuf> {
 /// Find the OMSI 2 installation without being told where it is.
 pub(crate) fn find_root() -> Option<PathBuf> {
     let mut first: Vec<PathBuf> = Vec::new();
-    if let Some(p) = omsi_cfg::env::var_os("OMSI_ROOT").map(PathBuf::from) {
+    if let Some(p) = omsi_cfg::flags::OMSI_ROOT.os().map(PathBuf::from) {
         first.push(p);
     }
     if let Some(memo) = root_memo() {
@@ -168,12 +168,13 @@ pub(crate) fn graphics_instance() -> wgpu::Instance {
         descriptor.backend_options.noop = wgpu::NoopBackendOptions { enable: true };
         return wgpu::Instance::new(descriptor);
     }
+    descriptor.backend_options.gl.context_lock_timeout = Some(GL_CONTEXT_LOCK_TIMEOUT);
     // (an interface whose only adapter is a software renderer - DirectX 12's "Microsoft
     // Basic Render Driver" on a chip without a DirectX 12 driver - comes after the others)
     let (mut software, mut last) = (None, None);
     for b in backend_order() {
         let instance = backend_instance(b);
-        let adapters = pollster::block_on(instance.enumerate_adapters(b));
+        let adapters = pollster::block_on(instance.enumerate_adapters(b.backends()));
         if adapters.iter().any(|a| !is_software(&a.get_info())) {
             log::info!("graphics: {:?} ({})", b, adapters.iter().map(|a| a.get_info().name).collect::<Vec<_>>().join(", "));
             return instance;
@@ -189,31 +190,90 @@ pub(crate) fn graphics_instance() -> wgpu::Instance {
     software.or(last).unwrap_or_else(|| wgpu::Instance::new(descriptor))
 }
 
+/// How long a thread waits for the shared OpenGL context before wgpu gives up on it (its own
+/// default is a second with WGL, six with EGL): one waiting for the GPU no longer holds the
+/// context, but a long upload or shader compile on another thread still can.
+const GL_CONTEXT_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A graphics interface to try: one of wgpu's backends, or its OpenGL ES backend on ANGLE.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraphicsApi {
+    Native(wgpu::Backends),
+    /// OpenGL ES on ANGLE's Direct3D 11 renderer (Windows only), for a chip whose OpenGL,
+    /// Vulkan and DirectX 12 drivers are missing or broken (Intel HD Graphics 2000-4000, AMD
+    /// Radeon HD 5000/6000): its DirectX 11 driver draws
+    Angle,
+}
+
+impl GraphicsApi {
+    /// wgpu's backend it draws on (ANGLE: the OpenGL one)
+    fn backends(self) -> wgpu::Backends {
+        match self {
+            GraphicsApi::Native(b) => b,
+            GraphicsApi::Angle => wgpu::Backends::GL,
+        }
+    }
+}
+
+// (the logs name a backend as before: `Backends(DX12)`)
+impl std::fmt::Debug for GraphicsApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GraphicsApi::Native(b) => b.fmt(f),
+            GraphicsApi::Angle => f.write_str("ANGLE (DirectX 11)"),
+        }
+    }
+}
+
+/// Is ANGLE there to be tried: on Windows, with Google's `libEGL.dll` and `libGLESv2.dll`
+/// next to the game (the package brings them; without them it is left out, with a line in
+/// the log once).
+fn angle_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if !cfg!(windows) {
+            return false;
+        }
+        let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) else { return false };
+        let missing: Vec<&str> = ["libEGL.dll", "libGLESv2.dll"].into_iter().filter(|f| !dir.join(f).is_file()).collect();
+        if !missing.is_empty() {
+            log::info!("graphics: ANGLE (DirectX 11) is not tried: no {} next to the game", missing.join(" or "));
+        }
+        missing.is_empty()
+    })
+}
+
 /// The graphics interfaces in the order they are tried: Metal on a Mac; on Windows DirectX
 /// 12 first (the Windows drivers' best-kept path: on Vulkan they reset the device -
 /// "the graphics device was lost" - far more often), then Vulkan, then OpenGL for a card
-/// without either (a GeForce GT 530); elsewhere Vulkan, then OpenGL. Settings → Graphics API
-/// (`graphics_api`) or OMSI_BACKEND=vulkan|dx12|gl puts one first: a driver whose Vulkan
-/// misbehaves is got round.
-pub(crate) fn backend_order() -> Vec<wgpu::Backends> {
+/// without either (a GeForce GT 530), then OpenGL ES on ANGLE over DirectX 11 when its DLLs
+/// are there; elsewhere Vulkan, then OpenGL. Settings → Graphics API (`graphics_api`) or
+/// OMSI_BACKEND=vulkan|dx12|gl|angle puts one first: a driver whose Vulkan misbehaves is
+/// got round.
+pub(crate) fn backend_order() -> Vec<GraphicsApi> {
     if cfg!(target_os = "macos") {
-        return vec![wgpu::Backends::METAL];
+        return vec![GraphicsApi::Native(wgpu::Backends::METAL)];
     }
     let settings = crate::settings::Settings::load();
     let wanted = if settings.vr_requested() {
         "dx12".to_owned()
     } else {
-        omsi_cfg::env::var("OMSI_BACKEND").ok().unwrap_or(settings.graphics_api)
+        omsi_cfg::flags::OMSI_BACKEND.var().map(str::to_string).unwrap_or(settings.graphics_api)
     };
-    let all: Vec<wgpu::Backends> = if cfg!(windows) {
+    let native = if cfg!(windows) {
         vec![wgpu::Backends::DX12, wgpu::Backends::VULKAN, wgpu::Backends::GL]
     } else {
         vec![wgpu::Backends::VULKAN, wgpu::Backends::GL]
     };
+    let mut all: Vec<GraphicsApi> = native.into_iter().map(GraphicsApi::Native).collect();
+    if cfg!(windows) && angle_available() {
+        all.push(GraphicsApi::Angle);
+    }
     let first = match wanted.trim().to_ascii_lowercase().as_str() {
-        "vulkan" => Some(wgpu::Backends::VULKAN),
-        "dx12" | "directx" | "d3d12" if cfg!(windows) => Some(wgpu::Backends::DX12),
-        "gl" | "opengl" | "gles" => Some(wgpu::Backends::GL),
+        "vulkan" => Some(GraphicsApi::Native(wgpu::Backends::VULKAN)),
+        "dx12" | "directx" | "d3d12" if cfg!(windows) => Some(GraphicsApi::Native(wgpu::Backends::DX12)),
+        "gl" | "opengl" | "gles" => Some(GraphicsApi::Native(wgpu::Backends::GL)),
+        "angle" | "dx11" | "d3d11" if all.contains(&GraphicsApi::Angle) => Some(GraphicsApi::Angle),
         _ => None,
     };
     // (the one asked for first, the others after it: a machine without it still starts)
@@ -230,9 +290,13 @@ fn software_adapter(name: &str, device_type: wgpu::DeviceType) -> bool {
     device_type == wgpu::DeviceType::Cpu || name.contains("Microsoft Basic Render Driver") || name.contains("llvmpipe")
 }
 
-fn backend_instance(b: wgpu::Backends) -> wgpu::Instance {
+fn backend_instance(api: GraphicsApi) -> wgpu::Instance {
     let mut d = wgpu::InstanceDescriptor::new_without_display_handle();
-    d.backends = b;
+    d.backend_options.gl.context_lock_timeout = Some(GL_CONTEXT_LOCK_TIMEOUT);
+    d.backends = api.backends();
+    if api == GraphicsApi::Angle {
+        d.backend_options.gl.platform = wgpu::GlPlatform::Angle;
+    }
     wgpu::Instance::new(d)
 }
 
@@ -259,7 +323,7 @@ pub(crate) fn window_renderer(
     // when no graphics chip opens on any interface: an Intel HD 2500 has no DirectX 12
     // driver, DirectX 12 listed that renderer alone, and the game "started" on it at a
     // frame every few seconds instead of on the chip's OpenGL (#770).
-    let mut made: Vec<(Option<wgpu::Backends>, wgpu::Instance)> = vec![(None, instance.clone())];
+    let mut made: Vec<(Option<GraphicsApi>, wgpu::Instance)> = vec![(None, instance.clone())];
     let mut order = backend_order().into_iter();
     let mut no_surface: Vec<usize> = Vec::new();
     for software_round in [false, true] {
@@ -416,7 +480,7 @@ pub(crate) static CLOUDS: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 pub(crate) fn restart_with_allocator_settings() {
     use std::os::unix::process::CommandExt;
     if std::env::var_os("MallocLargeCache").is_some()
-        || omsi_cfg::env::var_os("OMSI_KEEP_ALLOCATOR").is_some()
+        || omsi_cfg::flags::OMSI_KEEP_ALLOCATOR.is_set()
     {
         return;
     }

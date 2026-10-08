@@ -15,6 +15,7 @@ pub mod phone;
 mod multiplayer;
 pub(crate) mod pages;
 mod showroom;
+mod season;
 mod state;
 #[cfg_attr(not(target_os = "android"), allow(unused_imports))]
 pub(crate) use state::crash_of;
@@ -121,6 +122,8 @@ pub struct Launcher {
     exit_after: Option<f32>,
     shot: Option<(f32, std::path::PathBuf)>,
     started: Instant,
+    /// Until the first frame is on the screen: the preview loads no bus before it.
+    first_frame: bool,
     /// `OMSI_LAUNCHER_INPUT="t=2 click 400,300; t=3 type Bauern; t=4 key Enter; t=5 shot a.png;
     /// t=6 wheel -3; t=7 move 900,400"`: the window worked by a script (logical pixels).
     script: Vec<(f32, String)>,
@@ -175,6 +178,7 @@ pub fn run(instance: wgpu::Instance) -> anyhow::Result<()> {
 impl Launcher {
     /// The launcher, not yet in a window (that comes with `resumed`).
     pub fn new(instance: wgpu::Instance) -> Launcher {
+    let started = Instant::now();
     core::cleanup();
     let mut app = Launcher {
         instance,
@@ -199,10 +203,11 @@ impl Launcher {
         clipboard: Clipboard::new().ok(),
         // OMSI_LAUNCHER_EXIT=secs, OMSI_LAUNCHER_SHOT=secs:file.png, OMSI_LAUNCHER_PAGE=mods:
         // looking at the window without a person at it
-        exit_after: omsi_cfg::env::var("OMSI_LAUNCHER_EXIT").ok().and_then(|v| v.parse().ok()),
-        shot: omsi_cfg::env::var("OMSI_LAUNCHER_SHOT").ok().and_then(|v| v.split_once(':').map(|(t, f)| (t.parse().unwrap_or(5.0), std::path::PathBuf::from(f)))),
-        started: Instant::now(),
-        script: omsi_cfg::env::var("OMSI_LAUNCHER_INPUT")
+        exit_after: omsi_cfg::flags::OMSI_LAUNCHER_EXIT.parse(),
+        shot: omsi_cfg::flags::OMSI_LAUNCHER_SHOT.var().and_then(|v| v.split_once(':').map(|(t, f)| (t.parse().unwrap_or(5.0), std::path::PathBuf::from(f)))),
+        started,
+        first_frame: true,
+        script: omsi_cfg::flags::OMSI_LAUNCHER_INPUT.var()
             .map(|v| {
                 v.split(';')
                     .filter_map(|c| {
@@ -251,7 +256,7 @@ impl Launcher {
         let why = state::root_problem(&app.state.config.root);
         app.state.set_status(why, true);
     }
-    if let Ok(p) = omsi_cfg::env::var("OMSI_LAUNCHER_PAGE") {
+    if let Some(p) = omsi_cfg::flags::OMSI_LAUNCHER_PAGE.var().map(str::to_string) {
         if let Some((pg, _, _)) = PAGES.iter().find(|(_, n, _)| n.eq_ignore_ascii_case(p.split(':').next().unwrap_or(""))) {
             app.page = *pg;
             // (the phone's tab for it)
@@ -379,7 +384,7 @@ impl ApplicationHandler for Launcher {
             return;
         }
         // (`OMSI_LAUNCHER_SIZE=WxH`: another window size, for looking at the layout)
-        let asked = omsi_cfg::env::var("OMSI_LAUNCHER_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))));
+        let asked = omsi_cfg::flags::OMSI_LAUNCHER_SIZE.var().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))));
         let (fit, at) = match asked {
             Some((iw, ih)) => (winit::dpi::LogicalSize::new(iw, ih), None),
             None => crate::startup::fit_window(event_loop, 1440.0, 880.0),
@@ -392,7 +397,7 @@ impl ApplicationHandler for Launcher {
                 attrs = attrs.with_position(at);
             }
         }
-        if omsi_cfg::env::var_os("OMSI_BACKGROUND").is_some() {
+        if omsi_cfg::flags::OMSI_BACKGROUND.is_set() {
             attrs = attrs.with_active(false);
         }
         let window = match event_loop.create_window(attrs) {
@@ -531,7 +536,7 @@ impl ApplicationHandler for Launcher {
                     return;
                 }
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    self.ui.input.raw_key = Some(code);
+                    self.ui.input.capture_key(code);
                     let k = match code {
                         KeyCode::ArrowLeft => Some(Key::Left),
                         KeyCode::ArrowRight => Some(Key::Right),
@@ -592,7 +597,7 @@ impl ApplicationHandler for Launcher {
             && !self.script.iter().any(|(_, c)| c.starts_with("shot"));
         let interval = if occluded {
             0.5
-        } else if !self.focused && omsi_cfg::env::var_os("OMSI_BACKGROUND").is_none() {
+        } else if !self.focused && !omsi_cfg::flags::OMSI_BACKGROUND.is_set() {
             0.1
         } else if self.last_input.elapsed().as_secs_f32() > 3.0 && self.dragging.is_none() && self.script.is_empty() {
             // idle: 20 frames a second keep the preview and the progress bars moving
@@ -851,8 +856,9 @@ impl Launcher {
         // the preview shows the chosen bus in the chosen light
         let c = &self.state.choice;
         let look = showroom::Look { root: std::path::PathBuf::from(&self.state.config.root), map: c.map.clone(), bus: c.bus.clone(), paint: c.paint.clone(), weather: c.weather.clone(), time: c.time, date: c.date.clone() };
-        // (not while a game runs: the launcher looked at meanwhile loads no bus onto the card)
-        if !look.bus.is_empty() && !look.map.is_empty() && !self.state.in_game() {
+        // (not while a game runs: the launcher looked at meanwhile loads no bus onto the card;
+        // nor before the first frame is shown, which the bus's loading would hold up)
+        if !self.first_frame && !look.bus.is_empty() && !look.map.is_empty() && !self.state.in_game() {
             self.showroom.want(look);
         }
         if let Some(r) = self.renderer.as_ref() {
@@ -962,6 +968,9 @@ impl Launcher {
         }
         window.pre_present_notify();
         frame.present();
+        if std::mem::take(&mut self.first_frame) {
+            log::info!("launcher: first frame presented in {:.2} s", self.started.elapsed().as_secs_f64());
+        }
         self.check_exit(event_loop);
     }
 
@@ -1073,10 +1082,19 @@ impl Launcher {
         let disconnected = !dialog && self.state.disconnected.is_some();
         let crash = !dialog && !disconnected && self.state.crash.is_some();
         let reset = !dialog && !crash && !disconnected && self.pages.confirm_reset;
-        if self.browser.is_some() || dialog || crash || reset || disconnected {
+        let key_picker = self.browser.is_none()
+            && !dialog
+            && !crash
+            && !reset
+            && !disconnected
+            && self.page == Page::Controls
+            && self.pages.controls_tab == 0
+            && self.pages.kb_picker.is_some();
+
+        if self.browser.is_some() || dialog || crash || reset || disconnected || key_picker {
             self.pages.pads.cancel_feedback_test();
         }
-        let saved = (self.browser.is_some() || dialog || crash || reset || disconnected).then(|| {
+        let saved = (self.browser.is_some() || dialog || crash || reset || disconnected || key_picker).then(|| {
             let i = self.ui.input.clone();
             self.ui.input.mouse = Vec2::new(-1e4, -1e4);
             self.ui.input.pressed = false;
@@ -1084,6 +1102,7 @@ impl Launcher {
             self.ui.input.wheel = Vec2::ZERO;
             self.ui.input.keys.clear();
             self.ui.input.text.clear();
+            self.ui.input.raw_key = None;
             i
         });
         // a phone: the launcher made for it, not the desktop's pages
@@ -1136,6 +1155,8 @@ impl Launcher {
                 self.draw_crash_dialog();
             } else if reset {
                 pages::reset_dialog(self);
+            } else if key_picker {
+                pages::keybind_picker(self);
             } else {
                 self.draw_browser();
             }
@@ -1376,7 +1397,9 @@ impl Launcher {
 
 
 /// The showroom's renderer: a bus on a floor needs none of the game's costly passes - no
-/// ambient occlusion, a small shadow map, 4x MSAA for the edges whatever the game uses.
+/// ambient occlusion, a small shadow map, 4x MSAA for the edges whatever the game uses -
+/// and it draws Vanilla+ whatever the game does (`showroom::lighting_for`): no enhanced
+/// pipelines, reflection probe or cloud noise either (`RenderOptions::preview_only`).
 fn showroom_options(settings: &crate::settings::Settings) -> omsi_render::RenderOptions {
-    omsi_render::RenderOptions { msaa: 4, ssao: false, shadow_size: 1024, render_scale: 1.0, ..settings.render_options() }
+    omsi_render::RenderOptions { msaa: 4, ssao: false, shadow_size: 1024, render_scale: 1.0, preview_only: true, no_enhanced: true, ray_tracing: false, ..settings.render_options() }
 }

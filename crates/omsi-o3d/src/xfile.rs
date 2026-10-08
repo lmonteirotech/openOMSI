@@ -473,7 +473,7 @@ mod tests {
     #[ignore = "requires installed traffic-light assets; set OMSI_ROOT or OMSI_TEST_CONTENT"]
     fn installed_traffic_light_material_references() {
         let Some(root) =
-            std::env::var_os("OMSI_ROOT").or_else(|| std::env::var_os("OMSI_TEST_CONTENT"))
+            omsi_cfg::flags::OMSI_ROOT.live_os().or_else(|| omsi_cfg::flags::OMSI_TEST_CONTENT.live_os())
         else {
             eprintln!("skipped: set OMSI_ROOT or OMSI_TEST_CONTENT to the installed content root");
             return;

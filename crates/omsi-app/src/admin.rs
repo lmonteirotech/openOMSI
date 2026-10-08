@@ -28,7 +28,7 @@ pub(crate) const SPEEDS: [f64; 6] = [1.0, 2.0, 4.0, 8.0, 15.0, 30.0];
 /// The lines of the administration menu: (label, action).
 pub(crate) fn items(app: &App) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let Some(lan) = app.lan.as_ref() else { return out };
+    let Some(lan) = app.net.lan.as_ref() else { return out };
     let mut peers: Vec<(u32, String)> = lan.peers().map(|p| (p.pose.id, if p.pose.name.is_empty() { format!("Player {}", p.pose.id) } else { p.pose.name.clone() })).collect();
     peers.sort();
     for (id, name) in &peers {
@@ -53,7 +53,7 @@ pub(crate) fn items(app: &App) -> Vec<(String, String)> {
     for (label, secs) in [("Clock: 06:00 (morning)", 6 * 3600), ("Clock: 12:00 (noon)", 12 * 3600), ("Clock: 18:00 (evening)", 18 * 3600), ("Clock: 23:00 (night)", 23 * 3600)] {
         out.push((omsi_ui::tr(label).into_owned(), format!("clock {secs}")));
     }
-    if let Some(t) = app.traffic.as_ref() {
+    if let Some(t) = app.session.traffic.as_ref() {
         out.push((format!("{}: {} ({})", omsi_ui::tr("Traffic"), t.target, omsi_ui::tr("more / less")), "traffic next".into()));
     }
     out.push(("Clock +1 hour".into(), "time 3600".into()));
@@ -65,14 +65,14 @@ pub(crate) fn items(app: &App) -> Vec<(String, String)> {
     }
     out.push(("Next weather".into(), "weather next".into()));
     // the weather cycle, and each installed weather by name
-    let cycling = app.weather_cycle.is_some();
+    let cycling = app.session.weather_cycle.is_some();
     out.push((format!("{}: {}", omsi_ui::tr("Weather cycle"), if cycling { omsi_ui::tr("on") } else { omsi_ui::tr("off") }), "weather cycle".into()));
     for (file, w) in crate::weather_cycle::installed() {
         let now = app.args.weather.as_deref().is_some_and(|c| c.replace('\\', "/").eq_ignore_ascii_case(&file));
         let mark = if now { format!("  {}", omsi_ui::tr("(now)")) } else { String::new() };
         out.push((format!("{}: {}{mark}", omsi_ui::tr("Weather"), w.name), format!("weather set {file}")));
     }
-    if app.traffic.is_some() {
+    if app.session.traffic.is_some() {
         out.push((omsi_ui::tr("Clear the AI traffic (a jam)").into_owned(), "traffic clear".into()));
     }
     out.push(("Back".into(), "back".into()));
@@ -84,7 +84,7 @@ pub(crate) fn run(app: &mut App, action: &str) {
     if action == "back" {
         return;
     }
-    let Some(lan) = app.lan.as_mut() else { return };
+    let Some(lan) = app.net.lan.as_mut() else { return };
     if lan.role == Role::Client {
         // (a server's admin: the server does it)
         lan.command(1, &format!("admin {action}"));
@@ -106,7 +106,7 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             let Some((who, rest)) = arg.trim().split_once(' ') else { return };
             let Some((nid, n)) = crate::ui::Notice::parse(rest) else { return };
             let mut here = false;
-            if let Some(l) = app.lan.as_mut() {
+            if let Some(l) = app.net.lan.as_mut() {
                 let (ids, local) = notice_targets(who, l.peers().map(|p| p.pose.id), l.my_id);
                 for id in ids {
                     l.command(id, &format!("notify {}", rest.trim()));
@@ -115,18 +115,21 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             }
             if here {
                 log::info!("LAN: the server's notice {nid}: {}", n.text);
-                crate::ui::push_notice(&mut app.notices, n);
+                crate::ui::push_notice(&mut app.menus.notices, n);
             }
         }
         "kick" | "ban" => {
-            if let (Some(l), Some(id)) = (app.lan.as_mut(), id) {
+            if let (Some(l), Some(id)) = (app.net.lan.as_mut(), id) {
                 l.kick(id, if verb == "ban" { "sent away for this session" } else { "sent away by the host" }, verb == "ban");
             }
         }
         "goto" => {
-            let at = app.remotes.remotes.get(&id.unwrap_or(0)).map(|r| (r.vehicle().position, r.vehicle().heading));
+            let at = app.net.remotes.remotes.get(&id.unwrap_or(0)).map(|r| (r.vehicle().position, r.vehicle().heading));
             match (at, by) {
-                (Some((pos, heading)), None) => teleport_beside(app, pos, heading),
+                (Some((pos, heading)), None) => {
+                    teleport_beside(app, pos, heading);
+                    app.service_event("teleport", "player", None);
+                }
                 _ => app.service_msg = Some(("That player has no bus to go to".into(), 3.0)),
             }
         }
@@ -134,9 +137,9 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             // beside the host's bus (or the admin's), told to that player's game
             let here = match by {
                 None => app.player.as_ref().map(|p| (p.vehicle.position, p.vehicle.heading)),
-                Some(a) => app.remotes.remotes.get(&a).map(|r| (r.vehicle().position, r.vehicle().heading)),
+                Some(a) => app.net.remotes.remotes.get(&a).map(|r| (r.vehicle().position, r.vehicle().heading)),
             };
-            if let (Some((pos, h)), Some(id), Some(l)) = (here, id, app.lan.as_mut()) {
+            if let (Some((pos, h)), Some(id), Some(l)) = (here, id, app.net.lan.as_mut()) {
                 let (x, y) = beside(pos, h, 8.0);
                 l.command(id, &format!("teleport {x:.2} {y:.2} {:.2} {h:.1}", pos.z));
             }
@@ -151,7 +154,7 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
                 app.service_msg = Some(("The time speed is fixed while the real-time sync is on".into(), 3.0));
             } else if let Some(s) = finite(arg) {
                 let s = s.clamp(1.0, 30.0);
-                if let Some(l) = app.lan.as_mut() {
+                if let Some(l) = app.net.lan.as_mut() {
                     l.clock_speed = s;
                 }
                 app.service_msg = Some((format!("Time speed x{s}"), 3.0));
@@ -159,14 +162,14 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
         }
         "weather" => match arg.trim().split_once(' ').map(|(a, b)| (a, b.trim())).unwrap_or((arg.trim(), "")) {
             ("cycle", _) => {
-                if app.weather_cycle.take().is_none() {
+                if app.session.weather_cycle.take().is_none() {
                     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(7);
                     let mut c = crate::weather_cycle::Cycle::new(seed);
                     // (the first change soon, not in an hour)
                     c.next_in = 60.0;
-                    app.weather_cycle = Some(c);
+                    app.session.weather_cycle = Some(c);
                 }
-                let on = app.weather_cycle.is_some();
+                let on = app.session.weather_cycle.is_some();
                 app.service_msg = Some((format!("Weather cycle {}", if on { "on" } else { "off" }), 3.0));
             }
             // (only an installed weather file: the name comes from the admin's game)
@@ -176,7 +179,7 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             _ => app.next_weather(),
         },
         "say" => {
-            if let Some(l) = app.lan.as_mut() {
+            if let Some(l) = app.net.lan.as_mut() {
                 let _ = l.say(arg);
             }
         }
@@ -184,9 +187,9 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
         "bringall" => {
             let here = match by {
                 None => app.player.as_ref().map(|p| (p.vehicle.position, p.vehicle.heading)),
-                Some(a) => app.remotes.remotes.get(&a).map(|r| (r.vehicle().position, r.vehicle().heading)),
+                Some(a) => app.net.remotes.remotes.get(&a).map(|r| (r.vehicle().position, r.vehicle().heading)),
             };
-            if let (Some((pos, h)), Some(l)) = (here, app.lan.as_mut()) {
+            if let (Some((pos, h)), Some(l)) = (here, app.net.lan.as_mut()) {
                 let ids: Vec<u32> = l.peers().map(|p| p.pose.id).filter(|id| *id != l.my_id && Some(*id) != by).collect();
                 for (k, id) in ids.iter().enumerate() {
                     let (x, y) = beside(pos, h, 5.0 * (k as f64 + 1.0));
@@ -201,18 +204,18 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             if !matches!(kind, "repair" | "refuel" | "wash") {
                 return;
             }
-            if let Some(l) = app.lan.as_mut() {
+            if let Some(l) = app.net.lan.as_mut() {
                 let ids: Vec<u32> = if who == "all" { l.peers().map(|p| p.pose.id).filter(|id| *id != l.my_id).collect() } else { who.trim().parse::<u32>().ok().into_iter().collect() };
                 for id in &ids {
                     l.command(*id, &format!("service {kind}"));
                 }
             }
             if who == "all" {
-                app.run_service(kind);
+                app.run_service(kind, if by.is_some() { "host" } else { "player" });
             }
         }
         "unstick" => {
-            if let (Some(l), Some(id)) = (app.lan.as_mut(), who_id(arg)) {
+            if let (Some(l), Some(id)) = (app.net.lan.as_mut(), who_id(arg)) {
                 l.command(id, "unstick");
             }
         }
@@ -226,7 +229,7 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             clear_ai_traffic(app);
         }
         "traffic" => {
-            if let Some(t) = app.traffic.as_mut() {
+            if let Some(t) = app.session.traffic.as_mut() {
                 t.target = crate::game_lists::next_step(&crate::game_lists::TRAFFIC, t.target);
                 app.args.traffic = t.target;
                 app.service_msg = Some((format!("Traffic: {}", t.target), 3.0));
@@ -239,12 +242,12 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
 /// Take the current random AI traffic off the road. Timetable buses are kept, and the
 /// configured random traffic target will populate the roads again normally.
 pub(crate) fn clear_ai_traffic(app: &mut App) {
-    if app.lan.as_ref().is_some_and(|l| l.role == Role::Client) {
+    if app.net.lan.as_ref().is_some_and(|l| l.role == Role::Client) {
         app.service_msg = Some(("In a LAN session only the host can clear AI traffic".into(), 3.0));
         return;
     }
-    if let (Some(t), Some(w), Some(r), Some(scene)) = (app.traffic.as_mut(), app.world.as_ref(), app.renderer.as_ref(), app.scene.as_mut()) {
-        let removed = t.clear_random(w, r, scene);
+    if let (Some(t), Some(w), Some(r), Some(scene)) = (app.session.traffic.as_mut(), app.world.as_ref(), app.renderer.as_ref(), app.scene.as_mut()) {
+        let removed = t.clear_random(&mut app.gfx.sim_view.traffic, w, r, scene);
         app.service_msg = Some((format!("{removed} AI vehicles taken off the road"), 3.0));
     }
 }
@@ -294,7 +297,7 @@ fn teleport_beside(app: &mut App, pos: glam::DVec3, heading: f64) {
 
 /// Our bus put at `at` facing `heading` (stopped), with the walker back at its wheel.
 pub(crate) fn teleport(app: &mut App, at: glam::DVec3, heading: f64) {
-    if app.on_foot.is_some() {
+    if app.session.on_foot.is_some() {
         app.back_to_bus();
     }
     // on the level at the height asked for (a car park under a building, a road under a
@@ -340,6 +343,7 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
             if v.len() == 4 {
                 teleport(app, glam::DVec3::new(v[0], v[1], v[2]), v[3]);
                 app.service_msg = Some(("The host brought you to them".into(), 4.0));
+                app.service_event("teleport", "host", None);
             }
         }
         // (host → us) the host's object editor: a map object moved, turned or deleted…
@@ -363,13 +367,13 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
             if nums.len() == 6 && !rel.is_empty() {
                 let id = nums[0] as i64;
                 if let (Some(w), Some(r), Some(scene)) = (app.world.clone(), app.renderer.as_ref(), app.scene.as_mut()) {
-                    if let Some(g) = app.remote_added.remove(&id) {
+                    if let Some(g) = app.menus.remote_added.remove(&id) {
                         w.remove_helper_object(r, scene, g);
                     }
                     if nums[5] < 0.5 {
                         let path = app.args.root.join(&rel);
                         if let Some(g) = w.add_helper_object(r, scene, &path.to_string_lossy(), glam::DVec3::new(nums[1], nums[2], nums[3]), nums[4], &[]) {
-                            app.remote_added.insert(id, g);
+                            app.menus.remote_added.insert(id, g);
                         }
                     }
                 }
@@ -379,7 +383,7 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
         "service" if from == 1 => {
             let kind = arg.trim();
             if matches!(kind, "repair" | "refuel" | "wash") {
-                app.run_service(kind);
+                app.run_service(kind, "host");
                 app.service_msg = Some((format!("The host: {kind}"), 3.0));
             }
         }
@@ -388,13 +392,14 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
                 let (at, heading) = (p.vehicle.position, p.vehicle.heading);
                 teleport(app, at, heading);
                 app.service_msg = Some(("The host put your bus back on its wheels".into(), 4.0));
+                app.service_event("reset", "host", None);
             }
         }
         // (server → us) the password was right: the menu is ours
         // (server → us) prove the password without sending it
         "admin-challenge" if from == 1 => {
             let pw = PENDING_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let (Some(pw), Some(l)) = (pw, app.lan.as_mut()) {
+            if let (Some(pw), Some(l)) = (pw, app.net.lan.as_mut()) {
                 l.command(1, &format!("auth {}", response(arg.trim(), &pw)));
             }
         }
@@ -407,12 +412,12 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
             let reply = match parse_duty(arg) {
                 None => "duty-no malformed".to_string(),
                 Some((line, tour, trip, station)) => {
-                    let stops = app.schedule.as_ref().map(|s| s.tour_trip_stops(&line, &tour, trip)).unwrap_or_default();
+                    let stops = app.session.schedule.as_ref().map(|s| s.tour_trip_stops(&line, &tour, trip)).unwrap_or_default();
                     match stops.iter().position(|s| s.1 >= station).or(stops.len().checked_sub(1)) {
                         None => "duty-no unknown tour or trip".to_string(),
                         Some(chosen) => {
                             crate::game_lists::start_duty_at(app, &line, &tour, trip, chosen);
-                            let ok = app.duty.as_ref().is_some_and(|d| d.line.eq_ignore_ascii_case(&line) && d.tour.eq_ignore_ascii_case(&tour));
+                            let ok = app.session.duty.as_ref().is_some_and(|d| d.line.eq_ignore_ascii_case(&line) && d.tour.eq_ignore_ascii_case(&tour));
                             log::info!("LAN: the server gave us line {line} tour {tour}, trip {trip} from stop {chosen}: {}", if ok { "taken" } else { "not taken" });
                             if ok {
                                 format!("duty-ok {}", duty_arg(&line, &tour, trip, stops[chosen].1))
@@ -423,7 +428,7 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
                     }
                 }
             };
-            if let Some(l) = app.lan.as_mut() {
+            if let Some(l) = app.net.lan.as_mut() {
                 l.command(1, &reply);
             }
         }
@@ -434,8 +439,8 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
         "notify" if from == 1 => {
             if let Some((id, n)) = crate::ui::Notice::parse(arg) {
                 log::info!("LAN: the server's notice {id}: {}", n.text);
-                crate::ui::push_notice(&mut app.notices, n);
-                if let Some(l) = app.lan.as_mut() {
+                crate::ui::push_notice(&mut app.menus.notices, n);
+                if let Some(l) = app.net.lan.as_mut() {
                     l.command(1, &format!("notify-seen {id}"));
                 }
             }
@@ -443,18 +448,22 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
         // (host → us) the server's dispatch takes the duty back: free drive, as the game menu's
         // "end the duty"; the host hears `duty-off-ok` (there was one) or `duty-off-none`
         "duty-off" if from == 1 => {
-            let had = app.duty.take().map(|d| format!("{} {}", d.line, d.tour));
+            let had = app.session.duty.take().map(|d| format!("{} {}", d.line, d.tour));
+            // (the bus's own timetable with it, as "end the duty" clears it, #1317)
+            if let Some(p) = app.player.as_mut() {
+                crate::game_lists::clear_timetable(&mut p.vehicle);
+            }
             log::info!("LAN: the server took our duty back ({})", had.as_deref().unwrap_or("we had none"));
             if had.is_some() {
                 app.service_msg = Some(("The dispatch took the duty back: free drive".into(), 6.0));
             }
-            if let Some(l) = app.lan.as_mut() {
+            if let Some(l) = app.net.lan.as_mut() {
                 l.command(1, if had.is_some() { "duty-off-ok" } else { "duty-off-none" });
             }
         }
         "admin-locked" if from == 1 => app.service_msg = Some(("Too many wrong admin passwords: try again later".into(), 4.0)),
         "admin-ok" if from == 1 => {
-            app.is_admin = true;
+            app.net.is_admin = true;
             app.service_msg = Some(("You administer this server now: Esc menu, Administration".into(), 6.0));
         }
         "admin-no" if from == 1 => app.service_msg = Some(("Wrong admin password".into(), 4.0)),
@@ -496,11 +505,12 @@ pub(crate) enum TrafficOrder {
 }
 
 impl TrafficOrder {
-    /// `clear`, or a density (held to 0 .. 100).
+    /// `clear`, or a density (held to 0 .. the top of the game menu's Traffic steps, the
+    /// same limit as server.cfg's `traffic`: it was 100 here, 120 in the menu, #1327).
     pub fn parse(arg: &str) -> Option<TrafficOrder> {
         match arg.trim() {
             "clear" => Some(TrafficOrder::Clear),
-            v => v.parse::<usize>().ok().map(|n| TrafficOrder::Density(n.min(100))),
+            v => v.parse::<usize>().ok().map(|n| TrafficOrder::Density(n.min(crate::game_lists::TRAFFIC_MAX))),
         }
     }
 }
@@ -715,24 +725,25 @@ pub(crate) fn guard_fall(app: &mut App, dt: f32) {
         Some(w) => (crate::scene::drive_probe(&w.terrains, &w.surfaces, at.x, at.y, at.z + 1.5).below, w.walk_height(at.x, at.y)),
         None => (None, None),
     };
-    app.safe_age += dt;
+    app.session.safe_age += dt;
     let fallen = match (under, ground) {
         (Some(_), _) => false,
         (None, Some(g)) => at.z < g - 8.0,
-        (None, None) => app.safe_pose.map(|s| at.z < s.0.z - 40.0).unwrap_or(false),
+        (None, None) => app.session.safe_pose.map(|s| at.z < s.0.z - 40.0).unwrap_or(false),
     };
     if fallen {
-        if let Some((pos, heading)) = app.safe_pose {
+        if let Some((pos, heading)) = app.session.safe_pose {
             log::warn!("the bus fell through the world at ({:.1}, {:.1}, {:.1}): put back at ({:.1}, {:.1})", at.x, at.y, at.z, pos.x, pos.y);
             teleport(app, pos, heading);
             app.service_msg = Some(("The bus fell through the ground: it was put back where it last stood".into(), 5.0));
+            app.service_event("teleport", "game", None);
         }
         return;
     }
-    if app.safe_age >= 1.0 {
+    if app.session.safe_age >= 1.0 {
         if let Some(g) = under.filter(|g| (at.z - g).abs() < 2.5) {
-            app.safe_age = 0.0;
-            app.safe_pose = Some((glam::DVec3::new(at.x, at.y, g), p.vehicle.heading));
+            app.session.safe_age = 0.0;
+            app.session.safe_pose = Some((glam::DVec3::new(at.x, at.y, g), p.vehicle.heading));
         }
     }
 }
@@ -811,7 +822,8 @@ mod traffic_order_tests {
         assert_eq!(TrafficOrder::parse("clear"), Some(TrafficOrder::Clear));
         assert_eq!(TrafficOrder::parse(" 20 "), Some(TrafficOrder::Density(20)));
         assert_eq!(TrafficOrder::parse("0"), Some(TrafficOrder::Density(0)));
-        assert_eq!(TrafficOrder::parse("400"), Some(TrafficOrder::Density(100)));
+        assert_eq!(TrafficOrder::parse("400"), Some(TrafficOrder::Density(120)));
+        assert_eq!(TrafficOrder::parse("120"), Some(TrafficOrder::Density(crate::game_lists::TRAFFIC_MAX)));
         for bad in ["", "next", "-5", "2.5"] {
             assert_eq!(TrafficOrder::parse(bad), None, "{bad}");
         }

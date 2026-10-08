@@ -22,6 +22,8 @@ mod format_tests;
 pub const MAX_DIMENSION: usize = 16384;
 
 pub mod pbr;
+pub mod season_mix;
+pub use season_mix::{find_texture_in_look, mixed_look, season_mix, set_season_mix, SeasonMix};
 pub use gpu::{gpu_options, set_gpu_options, GpuOptions, PixelFormat, TextureData};
 
 #[derive(Debug, Clone)]
@@ -484,7 +486,7 @@ pub fn cfg_path(requested: &str, found: &Path) -> Option<PathBuf> {
         }
         for n in names {
             let c = d.join(&n);
-            if c.is_file() {
+            if omsi_cfg::vfs::is_file(&c) {
                 return Some(c);
             }
         }
@@ -773,6 +775,22 @@ mod tests {
         let upper = find_texture("ANZ-OBEN.JPG .", &[tex.as_path()]).map(|p| p.to_string_lossy().to_lowercase());
         assert_eq!(upper, Some(tex.join("anz-oben.jpg").to_string_lossy().to_lowercase()));
         assert_eq!(find_texture("texture.\\anz-oben.bmp", &[dir.as_path()]), Some(tex.join("anz-oben.jpg")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `[matl_freetex]` name of a bus stop sign (`\New Territories East\Freetex_Lolipop\x.bmp`)
+    /// is rooted at `texture\`, however its leading backslash reads as a path root.
+    #[test]
+    fn a_leading_backslash_names_a_texture_below_the_folder() {
+        let dir = std::env::temp_dir().join(format!("omsi-freetex-root-{}", std::process::id()));
+        let tex = dir.join("texture");
+        let sub = tex.join("New Territories East/Freetex_Lolipop");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("x.bmp"), b"x").unwrap();
+        assert_eq!(
+            find_texture("\\New Territories East\\Freetex_Lolipop\\x.bmp", &[tex.as_path()]),
+            Some(sub.join("x.bmp"))
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

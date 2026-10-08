@@ -13,12 +13,18 @@
 //! * The folder inside the archive that holds OMSI's content folders (`Vehicles`, `maps`,
 //!   `Sceneryobjects` …) becomes the mount's root: archives usually wrap everything in an
 //!   `OMSI 2/` folder next to documentation.
+//!
+//! A *sealed store* (see [`sealed`]) is mounted the same way: files kept on disk only in
+//! encrypted form (the mods a LAN host sent), read decrypted into memory.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
+
+mod sealed;
+pub use sealed::{is_sealed, mount_sealed, random_key, seal, sealed_len, unmount_sealed, unseal, SealKey, SealedFile, SEALED_OVERHEAD};
 
 /// One file inside an archive.
 #[derive(Debug, Clone)]
@@ -220,7 +226,7 @@ impl ZipArchive {
     /// top of an installation (`Vehicles`, `maps` ...), then those an add-on has inside too
     /// (`Sound`, `Texture`, `Scripts`) - then the shallowest, then the first by name.
     fn content_prefix<'a>(names: impl Iterator<Item = &'a str>) -> String {
-        const SHARED: [&str; 3] = ["Texture", "Sound", "Scripts"];
+        const SHARED: [&str; 3] = ["Texture", "Sounds", "Scripts"];
         let is_content = |c: &str| crate::CONTENT_FOLDERS.iter().any(|f| f.eq_ignore_ascii_case(c));
         // folder (lower case) -> (spelling, lower-case names of its sub-folders)
         let mut children: HashMap<String, (String, Vec<String>)> = HashMap::new();
@@ -406,8 +412,11 @@ pub fn archive_of(path: &Path) -> Option<PathBuf> {
     locate(path).map(|(m, _)| m.path.clone())
 }
 
-/// Read a whole file, from a folder or from a mounted archive.
+/// Read a whole file, from a folder, a mounted archive or a sealed store.
 pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+    if let Some((m, key)) = sealed::locate(path) {
+        return m.read(&key);
+    }
     match locate(path) {
         Some((m, key)) => m.read(&key),
         None => std::fs::read(path),
@@ -420,6 +429,9 @@ pub fn read_text(path: &Path) -> io::Result<String> {
 }
 
 pub fn exists(path: &Path) -> bool {
+    if let Some((m, key)) = sealed::locate(path) {
+        return m.is_file(&key) || m.is_dir(&key);
+    }
     match locate(path) {
         Some((m, key)) => key.is_empty() || m.is_file(&key) || m.is_dir(&key),
         None => path.exists(),
@@ -427,6 +439,9 @@ pub fn exists(path: &Path) -> bool {
 }
 
 pub fn is_file(path: &Path) -> bool {
+    if let Some((m, key)) = sealed::locate(path) {
+        return m.is_file(&key);
+    }
     match locate(path) {
         Some((m, key)) => m.is_file(&key),
         None => path.is_file(),
@@ -434,6 +449,9 @@ pub fn is_file(path: &Path) -> bool {
 }
 
 pub fn is_dir(path: &Path) -> bool {
+    if let Some((m, key)) = sealed::locate(path) {
+        return m.is_dir(&key);
+    }
     match locate(path) {
         Some((m, key)) => key.is_empty() || m.is_dir(&key),
         None => path.is_dir(),
@@ -442,6 +460,9 @@ pub fn is_dir(path: &Path) -> bool {
 
 /// Names in a folder with a flag for sub-folders; `None` when it is not a folder.
 pub fn list_dir(path: &Path) -> Option<Vec<(OsString, bool)>> {
+    if let Some((m, key)) = sealed::locate(path) {
+        return m.list(&key);
+    }
     match locate(path) {
         Some((m, key)) => m.dirs.get(&key).map(|l| l.iter().map(|(n, d)| (OsString::from(n), *d)).collect()),
         None => {
@@ -460,6 +481,18 @@ pub fn list_dir(path: &Path) -> Option<Vec<(OsString, bool)>> {
                     .collect(),
             )
         }
+    }
+}
+
+/// The size of a file (a folder's, an archive's or a sealed store's); `None` when it is no
+/// file.
+pub fn file_size(path: &Path) -> Option<u64> {
+    if let Some((m, key)) = sealed::locate(path) {
+        return m.size(&key);
+    }
+    match locate(path) {
+        Some((m, key)) => m.entries.get(&key).map(|e| e.size),
+        None => std::fs::metadata(path).ok().filter(|md| md.is_file()).map(|md| md.len()),
     }
 }
 
@@ -489,7 +522,7 @@ pub fn mount_dir_zips(dir: &Path) -> Vec<PathBuf> {
 /// Mount every archive listed in `OMSI_CONTENT_ZIP` (separated like `PATH`) as a content
 /// root. Returns the mount points.
 pub fn mount_env_zips() -> Vec<PathBuf> {
-    let Some(v) = std::env::var_os("OMSI_CONTENT_ZIP") else { return Vec::new() };
+    let Some(v) = crate::flags::OMSI_CONTENT_ZIP.live_os() else { return Vec::new() };
     let mut out = Vec::new();
     for p in std::env::split_paths(&v) {
         if p.as_os_str().is_empty() {
@@ -658,5 +691,38 @@ mod tests {
     fn names() {
         assert_eq!(decode_name(&[b'S', b't', b'r', b'a', 0xE1, b'e'], false), "Straße");
         assert_eq!(normalize("a\\B/./c/../D"), "a/b/d");
+    }
+
+    #[test]
+    fn repaint_relative_common_paths_resolve_across_archive_and_installation() {
+        let dir = std::env::temp_dir().join(format!("omsi-repaint-common-{}", std::process::id()));
+        let content = dir.join("content");
+        let install = dir.join("install");
+        let package = "SyntheticCommonCompatibility";
+        let base_rel = format!("Vehicles/{package}/Texture/Repaints");
+        let common_rel = format!("Vehicles/{package}/common");
+        std::fs::create_dir_all(content.join("Archives")).unwrap();
+        std::fs::create_dir_all(install.join(&base_rel)).unwrap();
+        std::fs::create_dir_all(install.join(&common_rel)).unwrap();
+        std::fs::write(install.join(&common_rel).join("Stock.DDS"), b"stock").unwrap();
+        let archive = content.join("Archives/compat.zip");
+        let anchor = format!("{base_rel}/anchor.cti");
+        let texture = format!("{common_rel}/Paint.DDS");
+        write_zip(&archive, &[(anchor.as_str(), b"synthetic".to_vec(), false),
+            (texture.as_str(), b"archive".to_vec(), true)]);
+        crate::add_content_root(content.clone());
+        mount_dir_zips(&content.join("Archives"));
+        crate::add_content_root(install.clone());
+        // Same resolver for a repaint based in an archive or in an installation.
+        for base in [archive.join(&base_rel), install.join(&base_rel)] {
+            let paint = crate::resolve_path(&base, "..\\..\\COMMON\\paint.dds");
+            assert_eq!(read(&paint).unwrap(), b"archive", "{}", paint.display());
+            let stock = crate::resolve_path(&base, "../../common/STOCK.dds");
+            assert_eq!(read(&stock).unwrap(), b"stock", "{}", stock.display());
+        }
+        crate::remove_content_root(&content);
+        crate::remove_content_root(&archive);
+        crate::remove_content_root(&install);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -540,11 +540,18 @@ fn vehicle_sheet(l: &mut Launcher, r: Rect) -> bool {
             WARN,
         ) + 12.0;
     }
+    // (the whole description, which can run to several screens: it scrolls in the room left
+    // under the fields)
     let description = vehicle.description.replace('\t', " ").lines().map(str::trim).collect::<Vec<_>>().join("\n").trim().to_string();
-    if !description.is_empty() {
-        y += l.ui.paragraph(&description, Vec2::new(inner.x, y), inner.w, 12.0, Weight::Regular, TEXT_DIM) + 12.0;
-    }
-    l.ui.text_in(&vehicle.file, Rect::new(inner.x, y, inner.w, 22.0), 10.5, Weight::Regular, TEXT_FAINT, Align::Left);
+    let rest = Rect::new(inner.x, y, inner.w, (inner.bottom() - y).max(40.0));
+    l.ui.scroll_area("pv-description", rest, &mut |ui, v| {
+        let mut h = 0.0;
+        if !description.is_empty() {
+            h += ui.paragraph(&description, Vec2::new(v.x, v.y), v.w - 8.0, 12.0, Weight::Regular, TEXT_DIM) + 12.0;
+        }
+        ui.text_in(&vehicle.file, Rect::new(v.x, v.y + h, v.w - 8.0, 22.0), 10.5, Weight::Regular, TEXT_FAINT, Align::Left);
+        h + 22.0
+    });
     false
 }
 
@@ -575,23 +582,22 @@ fn start_sheet(l: &mut Launcher, r: Rect) -> bool {
     let mut season = seasons.iter().position(|s| *s == l.state.choice.season).unwrap_or(0);
     l.ui.label(Rect::new(inner.x, y, 112.0, ROW), "Season");
     if l.ui.select("ps-season", Rect::new(inner.x + 112.0, y, inner.w - 112.0, ROW), &mut season, &labels) {
-        l.state.choice.season = seasons[season].to_string();
-        if season > 0 {
-            let month = ["", "04", "07", "10", "01"][season];
-            let date = l.state.choice.date.clone();
-            let (yy, dd) = (date.get(0..4).unwrap_or("1989").to_string(), date.get(8..10).unwrap_or("15").to_string());
-            l.state.choice.date = format!("{yy}-{month}-{dd}");
-            l.state.load_lines();
-        }
-        let weather = l.state.choice.weather.clone();
-        if let Some(w) = l.state.weathers.iter().find(|x| x.file == weather).cloned() {
-            if !l.state.weather_fits(&w) {
-                l.state.choice.weather.clear();
-            }
-        }
-        l.state.touched();
+        // (a season: the date goes to its phase's typical day, see `season_phase`)
+        l.state.set_season(seasons[season]);
+        phone_season_weather_fits(l);
     }
     y += ROW + 14.0;
+    // a season chosen: its early, middle or late part
+    if season > 0 {
+        let phases = ["early", "mid", "late"];
+        let mut p = phases.iter().position(|x| *x == l.state.choice.phase).unwrap_or(1);
+        if l.ui.segmented("ps-season-phase", Rect::new(inner.x + 112.0, y - 6.0, inner.w - 112.0, 32.0), &mut p, &["Early", "Mid", "Late"]) {
+            l.state.choice.phase = phases[p].to_string();
+            l.state.season_chosen();
+            phone_season_weather_fits(l);
+        }
+        y += 40.0;
+    }
 
     let mut traffic = l.state.choice.traffic;
     if l.ui.slider("ps-traffic", Rect::new(inner.x, y, inner.w, 36.0), &mut traffic, 0.0, 120.0, 1.0, "Cars around", &|v| format!("{v:.0}")) {
@@ -849,6 +855,7 @@ fn time_sheet(l: &mut Launcher, r: Rect) -> bool {
     if l.ui.date_field("p-date", Rect::new(left.x, left.y + 106.0, left.w, 48.0), &mut d) {
         l.state.choice.date = d;
         l.state.choice.season = "auto".into();
+        l.state.choice.own_date = None;
         l.state.load_lines();
         l.state.touched();
     }
@@ -1200,4 +1207,15 @@ fn embedded(l: &mut Launcher, page: Page, body: Rect, back: bool) {
             l.page_scroll = 0.0;
         }
     }
+}
+
+/// After the season changed: a chosen weather that does not fit it goes, and the duty is saved.
+fn phone_season_weather_fits(l: &mut Launcher) {
+    let weather = l.state.choice.weather.clone();
+    if let Some(w) = l.state.weathers.iter().find(|x| x.file == weather).cloned() {
+        if !l.state.weather_fits(&w) {
+            l.state.choice.weather.clear();
+        }
+    }
+    l.state.touched();
 }

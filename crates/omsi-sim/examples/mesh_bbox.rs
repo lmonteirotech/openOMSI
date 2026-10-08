@@ -8,7 +8,7 @@ fn main() {
     let content = PathBuf::from(&a[1]);
     omsi_cfg::add_content_root(content.clone());
     omsi_cfg::vfs::mount_dir_zips(&content.join("Archives"));
-    let orig = std::env::var("OMSI_ROOT").map(PathBuf::from).unwrap_or(content.clone());
+    let orig = omsi_cfg::flags::OMSI_ROOT.live_var().map(PathBuf::from).unwrap_or(content.clone());
     omsi_cfg::add_content_root(orig.clone());
     let bus = omsi_cfg::resolve_path(&orig, &a[2]);
     let filter = a.get(3).map(|s| s.to_ascii_lowercase());

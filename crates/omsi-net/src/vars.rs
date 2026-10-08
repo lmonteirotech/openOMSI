@@ -247,7 +247,7 @@ mod tests {
         let mut tx = VarSender::default();
         let mut got = vec![f32::NAN; n];
         let mut got_s = vec![String::new(); 40];
-        let mut take = |msgs: Vec<Vec<u8>>, got: &mut Vec<f32>, got_s: &mut Vec<String>| {
+        let take = |msgs: Vec<Vec<u8>>, got: &mut Vec<f32>, got_s: &mut Vec<String>| {
             for m in msgs {
                 assert!(m.len() <= crate::MAX_DATAGRAM, "{}", m.len());
                 let v = decode(&m, 5).unwrap();

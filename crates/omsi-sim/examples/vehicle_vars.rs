@@ -10,7 +10,7 @@ fn main() {
     if archives.is_dir() {
         omsi_cfg::vfs::mount_dir_zips(&archives);
     }
-    let orig_dir = std::env::var_os("OMSI_ORIGINAL").map(std::path::PathBuf::from).unwrap_or_default();
+    let orig_dir = omsi_cfg::flags::OMSI_ORIGINAL.live_os().map(std::path::PathBuf::from).unwrap_or_default();
     let orig = orig_dir.as_path();
     if orig.is_dir() {
         omsi_cfg::add_content_root(orig.to_path_buf());

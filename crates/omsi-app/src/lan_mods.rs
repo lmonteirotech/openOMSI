@@ -6,10 +6,24 @@
 //! port number as its LAN session (UDP). It serves nothing but the files of that list, by
 //! their number in it: no path a client names is ever opened. A joining game asks for the
 //! list before its world is loaded, fetches what it does not have in the same version
-//! (compared by SHA-256), checks every file against the list's size and hash, and keeps
-//! them in a folder of its own for this session (`~/.openomsi/lan-mods/<pid>`), which
-//! becomes the first content root. The folder goes when the session ends (and one left by a
-//! game that did not end cleanly goes at the next start).
+//! (compared by SHA-256), checks every file against the list's size and hash, and mounts
+//! them for this session at `~/.openomsi/lan-mods/<pid>`, which becomes the first content
+//! root. The mount goes when the session ends (and a folder an older version left there
+//! goes at the next start).
+//!
+//! Not to be copied: the connection is encrypted (`channel`: a key agreement of its own,
+//! bound to the session, then authenticated frames - an older game is told to update), and
+//! nothing the host sends is ever written to the disk in plain form. The files are kept
+//! sealed in the store (`store`, `~/.openomsi/lan-store`, so the next join need not fetch
+//! them again), named by a keyed hash, and the session's mount is a sealed store of
+//! `omsi_cfg::vfs`: the engine reads them decrypted into memory under their own names,
+//! while a copy of the game's folders gives nothing but noise. Nothing the engine derives
+//! from them is cached on the disk either (`omsi_cfg::vfs::is_sealed`). What this does not
+//! do, honestly: stop a determined player. openOMSI is open source and the decryption runs
+//! on the player's machine, with the store's key beside it (see `store`) - a changed build,
+//! or a dump of the game's memory, has the files in plain form. And the host's own copy is
+//! the host's mod folder, as it always was. It keeps the mods from being copied out of the
+//! game's folders or read off the network, no more.
 //!
 //! What may come: files under the content folders a map or a vehicle lives in (maps,
 //! Vehicles, Sceneryobjects, Splines, Humans, Fonts, TicketPacks, Money, Weather, Texture,
@@ -20,7 +34,11 @@
 //! touches nothing outside the vehicle. No plugin is ever loaded from the session folder
 //! (`omsi_cfg::mark_sandbox`).
 
+mod channel;
+mod store;
+
 use crate::Args;
+use channel::{SecureReader, SecureWriter};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -29,7 +47,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const MAGIC: &str = "OMSIMODS/1";
 /// The most one file may have (a map tile or a texture is a few MB; a sound a few tens).
 const MAX_FILE: u64 = 1 << 30;
 /// The most a whole session may bring.
@@ -387,7 +404,7 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
 
 /// Serve the session's mods on TCP `port` (a thread; the list is made in the background).
 pub fn serve(port: u16, session: u64, args: &Args) {
-    if omsi_cfg::env::var_os("OMSI_NO_LAN_MODS").is_some() {
+    if omsi_cfg::flags::OMSI_NO_LAN_MODS.is_set() {
         return;
     }
     let listener = match TcpListener::bind(("0.0.0.0", port)) {
@@ -444,7 +461,7 @@ const MAX_CONNECTIONS: usize = 16;
 const MAX_LINE: u64 = 256;
 
 /// One line of at most `MAX_LINE` bytes (a longer one ends the connection).
-fn read_line_limited(input: &mut BufReader<TcpStream>, line: &mut String) -> std::io::Result<usize> {
+fn read_line_limited(input: &mut impl BufRead, line: &mut String) -> std::io::Result<usize> {
     let n = input.by_ref().take(MAX_LINE).read_line(line)?;
     if n as u64 >= MAX_LINE && !line.ends_with('\n') {
         return Err(std::io::Error::other("request line too long"));
@@ -460,7 +477,12 @@ fn handle(stream: TcpStream, session: u64, ready: &Mutex<Option<Arc<(Manifest, V
     let mut line = String::new();
     read_line_limited(&mut input, &mut line)?;
     let hello: Vec<&str> = line.split_whitespace().collect();
-    if hello.len() != 2 || hello[0] != MAGIC || u64::from_str_radix(hello[1], 16).ok() != Some(session) {
+    // (a game of the unencrypted protocol is told why it gets nothing)
+    if hello.first() == Some(&channel::OLD_MAGIC) {
+        writeln!(out, "{}", channel::OLD_PEER)?;
+        return Ok(());
+    }
+    if hello.len() != 3 || hello[0] != channel::MAGIC || u64::from_str_radix(hello[1], 16).ok() != Some(session) {
         out.write_all(b"ERR not this session\n")?;
         return Ok(());
     }
@@ -477,8 +499,14 @@ fn handle(stream: TcpStream, session: u64, ready: &Mutex<Option<Arc<(Manifest, V
         std::thread::sleep(Duration::from_millis(100));
     };
     let (manifest, sources) = (&data.0, &data.1);
-    writeln!(out, "OK")?;
+    let keys = channel::Handshake::new()?;
+    writeln!(out, "OK {}", keys.public_hex())?;
+    let (send, receive) = keys.finish(session, false, hello[2])?;
+    let mut out = SecureWriter::new(out, send);
+    let mut input = SecureReader::new(input, receive);
     loop {
+        // (what was answered goes out before the next request is waited for)
+        out.flush()?;
         line.clear();
         if read_line_limited(&mut input, &mut line)? == 0 {
             return Ok(());
@@ -498,7 +526,7 @@ fn handle(stream: TcpStream, session: u64, ready: &Mutex<Option<Arc<(Manifest, V
                 // a plain file goes as it is read (never all of it in memory); one in a
                 // mounted archive is read whole (archives hold small files)
                 let src = &sources[k];
-                if omsi_cfg::vfs::archive_of(src).is_none() {
+                if omsi_cfg::vfs::archive_of(src).is_none() && !omsi_cfg::vfs::is_sealed(src) {
                     match std::fs::File::open(src).and_then(|f| f.metadata().map(|m| (f, m.len()))) {
                         Ok((f, len)) => {
                             writeln!(out, "OK {len}")?;
@@ -520,7 +548,7 @@ fn handle(stream: TcpStream, session: u64, ready: &Mutex<Option<Arc<(Manifest, V
                     }
                 }
             }
-            ["BYE"] | [] => return Ok(()),
+            ["BYE"] | [] => return out.flush(),
             _ => writeln!(out, "ERR what")?,
         }
     }
@@ -540,6 +568,10 @@ static SANDBOX: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// Remove the session folders of games that are no longer running (one that ended without
 /// cleaning up).
 pub fn remove_stale() {
+    // (and the plain files an older version kept in the store)
+    if let Some(s) = store_dir() {
+        store::remove_legacy(&s);
+    }
     let Some(base) = sandbox_base() else { return };
     let Ok(rd) = std::fs::read_dir(&base) else { return };
     for e in rd.flatten() {
@@ -575,10 +607,8 @@ pub fn clean_up() {
     let taken = SANDBOX.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(dir) = taken {
         omsi_cfg::remove_content_root(&dir);
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => log::info!("LAN mods: the host's mods of this session were removed"),
-            Err(e) => log::warn!("LAN mods: could not remove {}: {e} (it goes at the next start)", dir.display()),
-        }
+        omsi_cfg::vfs::unmount_sealed(&dir);
+        log::info!("LAN mods: the host's mods of this session were taken away (they stay sealed in the store)");
     }
 }
 
@@ -607,7 +637,7 @@ pub struct Report {
     pub refused: Vec<String>,
 }
 
-fn read_reply(input: &mut BufReader<TcpStream>) -> Result<Option<u64>, String> {
+fn read_reply(input: &mut impl BufRead) -> Result<Option<u64>, String> {
     let mut line = String::new();
     input.read_line(&mut line).map_err(|e| e.to_string())?;
     let t = line.trim();
@@ -641,44 +671,52 @@ fn save_hash_cache(c: &HashCache) {
 /// Fetch the host's mods (a joining player, before its world is loaded): what this machine
 /// does not have in the host's version goes into the session folder, which becomes the
 /// first content root; the host's map becomes ours. `progress` is told (done, total bytes).
+/// A connection to the host's mods, greeted and its keys agreed: the socket (to shut it
+/// down), and the encrypted halves.
+type Connection = (TcpStream, SecureWriter<TcpStream>, SecureReader<BufReader<TcpStream>>);
+
 /// A connection to the host's mods, greeted.
-fn open(host: SocketAddr, session: u64) -> Result<(TcpStream, BufReader<TcpStream>), String> {
+fn open(host: SocketAddr, session: u64) -> Result<Connection, String> {
     let stream = TcpStream::connect_timeout(&host, Duration::from_secs(6)).map_err(|e| format!("cannot reach the host's mods on TCP {host}: {e}"))?;
     // the host greets once its list is made, which takes a while on a big map (it waits
     // up to ten minutes for it): after 25 s a join gave up on a big add-on map, and the
     // player was left without the host's map
     stream.set_read_timeout(Some(Duration::from_secs(600))).ok();
     stream.set_nodelay(true).ok();
+    let raw = stream.try_clone().map_err(|e| e.to_string())?;
     let mut out = stream.try_clone().map_err(|e| e.to_string())?;
     let mut input = BufReader::with_capacity(1 << 20, stream);
-    writeln!(out, "{MAGIC} {}", omsi_net::session_hex(session)).map_err(|e| e.to_string())?;
-    read_reply(&mut input)?;
+    let keys = channel::Handshake::new().map_err(|e| e.to_string())?;
+    writeln!(out, "{} {} {}", channel::MAGIC, omsi_net::session_hex(session), keys.public_hex()).map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    input.read_line(&mut line).map_err(|e| e.to_string())?;
+    let t = line.trim();
+    let Some(host_key) = t.strip_prefix("OK ") else {
+        let said = t.strip_prefix("ERR").unwrap_or(t).trim();
+        // (what a host of the unencrypted protocol says to every greeting of this one)
+        if said == "not this session" {
+            return Err("the host says: not this session (or the host's openOMSI is older and sends its mods unencrypted: both need the same version)".into());
+        }
+        return Err(format!("the host says: {said}"));
+    };
+    let (send, receive) = keys.finish(session, true, host_key.trim()).map_err(|e| e.to_string())?;
     // (then a stalled transfer ends the attempt instead of holding the game's start for ever)
     input.get_ref().set_read_timeout(Some(Duration::from_secs(25))).ok();
-    Ok((out, input))
+    Ok((raw, SecureWriter::new(out, send), SecureReader::new(input, receive)))
 }
 
-/// The downloads kept between sessions, by their SHA-256 (`~/.openomsi/lan-store`): a
+/// The downloads kept between sessions, sealed (`~/.openomsi/lan-store`, see `store`): a
 /// map fetched once is not fetched again at the next join.
 fn store_dir() -> Option<PathBuf> {
     sandbox_base().map(|b| b.with_file_name("lan-store"))
 }
 
-/// Put a stored file at `target` (a hard link, a copy where links are not possible).
-fn place(stored: &Path, target: &Path) -> std::io::Result<()> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let _ = std::fs::remove_file(target);
-    std::fs::hard_link(stored, target).or_else(|_| std::fs::copy(stored, target).map(|_| ()))
-}
-
 pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn FnMut(u64, u64, &str)) -> Result<Report, String> {
-    if omsi_cfg::env::var_os("OMSI_NO_LAN_MODS").is_some() {
+    if omsi_cfg::flags::OMSI_NO_LAN_MODS.is_set() {
         return Err("switched off (OMSI_NO_LAN_MODS)".into());
     }
-    let (mut out, mut input) = open(host, session)?;
-    writeln!(out, "LIST").map_err(|e| e.to_string())?;
+    let (raw, mut out, mut input) = open(host, session)?;
+    writeln!(out, "LIST").and_then(|_| out.flush()).map_err(|e| e.to_string())?;
     let len = read_reply(&mut input)?.ok_or("no list")?;
     if len > 256 << 20 {
         return Err("the list is too large".into());
@@ -738,11 +776,11 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
     };
     let mut cache = cache;
     let base = sandbox_base().ok_or("no home folder")?;
+    // (the mount point: no folder on the disk)
     let dir = base.join(std::process::id().to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let store = store_dir().ok_or("no home folder")?;
-    std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
-    let target_of = |e: &Entry| e.path.split('/').fold(dir.clone(), |p, c| p.join(c));
+    let store = store::Store::open(&store_dir().ok_or("no home folder")?)?;
+    // the session's files: in the store, sealed
+    let mut mounted: Vec<omsi_cfg::vfs::SealedFile> = Vec::new();
     todo.clear();
     for (k, same, fresh) in checks {
         if let Some((key, v)) = fresh {
@@ -754,8 +792,8 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
             continue;
         }
         // fetched at an earlier join
-        let stored = store.join(&e.sha256);
-        if std::fs::metadata(&stored).map(|m| m.len() == e.size).unwrap_or(false) && place(&stored, &target_of(e)).is_ok() {
+        if let Some(f) = store.has(e) {
+            mounted.push(f);
             report.had += 1;
             continue;
         }
@@ -774,7 +812,7 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
     }
     // (nothing to fetch needs no room: a nearly full disk turned away a join that had
     // everything already)
-    if let Some(free) = free_space(&dir).filter(|_| total > 0) {
+    if let Some(free) = free_space(store.dir()).filter(|_| total > 0) {
         if free < total + KEEP_FREE {
             return Err(format!("{:.1} GB are needed for the host's mods, {:.1} GB are free", (total + KEEP_FREE) as f64 / 1e9, free as f64 / 1e9));
         }
@@ -785,11 +823,12 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
     let mut done = 0u64;
     let mut left: Vec<usize> = todo.clone();
     let mut attempt = 0;
+    let mut conn = Some((raw, out, input));
     while !left.is_empty() {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(500 * attempt as u64));
             match open(host, session) {
-                Ok(c) => (out, input) = c,
+                Ok(c) => conn = Some(c),
                 Err(e) if attempt < 8 => {
                     log::warn!("LAN mods: {e}; trying again");
                     attempt += 1;
@@ -804,9 +843,9 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
             req.push_str(&format!("GET {k}\n"));
         }
         req.push_str("BYE\n");
-        let mut w = out.try_clone().map_err(|e| e.to_string())?;
+        let (raw, mut w, mut input) = conn.take().ok_or("no connection")?;
         let writer = std::thread::spawn(move || {
-            let _ = w.write_all(req.as_bytes());
+            let _ = w.write_all(req.as_bytes()).and_then(|_| w.flush());
         });
         let mut got = 0usize;
         let mut failed: Option<String> = None;
@@ -838,22 +877,14 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
                 report.refused.push(format!("{}: a program", e.path));
                 continue;
             }
-            let target = target_of(e);
-            // (inside the session folder, whatever the name: `refuse_path` has seen to that)
-            if !target.starts_with(&dir) {
-                report.refused.push(format!("{}: outside", e.path));
-                continue;
-            }
-            let stored = store.join(&e.sha256);
-            let tmp = store.join(format!("{}.part", e.sha256));
-            std::fs::write(&tmp, &data).and_then(|_| std::fs::rename(&tmp, &stored)).map_err(|x| format!("{}: {x}", e.path))?;
-            place(&stored, &target).map_err(|x| format!("{}: {x}", e.path))?;
+            // (sealed straight away: the plain bytes never reach the disk)
+            mounted.push(store.put(e, &data).map_err(|x| format!("{}: {x}", e.path))?);
             done += len;
             report.fetched += 1;
             report.bytes += len;
             progress(done, total, &e.path);
         }
-        let _ = out.shutdown(std::net::Shutdown::Both);
+        let _ = raw.shutdown(std::net::Shutdown::Both);
         let _ = writer.join();
         left.drain(..got);
         if let Some(x) = failed {
@@ -865,6 +896,7 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
     }
     // the session folder is content like any other, searched first, and never a source of
     // plugins
+    omsi_cfg::vfs::mount_sealed(&dir, store.key(), mounted);
     omsi_cfg::mark_sandbox(dir.clone());
     omsi_cfg::add_content_root_first(dir.clone());
     // the host's map (now that we have it)
@@ -909,6 +941,109 @@ mod tests {
         ] {
             assert!(refuse_path(bad).is_some(), "{bad} should be refused");
         }
+    }
+
+    /// A host serving `files` (relative path, contents) on a local port: its address.
+    fn serve_files(session: u64, files: &[(&str, Vec<u8>)]) -> (SocketAddr, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("openomsi-lan-serve-{}-{session:x}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut entries = Vec::new();
+        let mut sources = Vec::new();
+        for (k, (rel, data)) in files.iter().enumerate() {
+            let p = dir.join(format!("{k}"));
+            std::fs::write(&p, data).unwrap();
+            entries.push(Entry { path: rel.to_string(), size: data.len() as u64, sha256: sha256_of(data) });
+            sources.push(p);
+        }
+        let ready = Arc::new(Mutex::new(Some(Arc::new((Manifest { map: "maps/M/global.cfg".into(), bus: String::new(), entries }, sources)))));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let ready = ready.clone();
+                std::thread::spawn(move || handle(stream, session, &ready));
+            }
+        });
+        (addr, dir)
+    }
+
+    #[test]
+    fn mods_go_encrypted_over_tcp() {
+        let marker = b"[name]\nPLAINTEXT-MARKER-wire\n".repeat(5000);
+        let small = b"[mesh]\nPLAINTEXT-MARKER-two\n".to_vec();
+        let (addr, dir) = serve_files(0x5e55, &[("maps/M/global.cfg", marker.clone()), ("maps/M/x.sco", small.clone())]);
+        // what goes over the wire: a relay in between records it
+        let relay = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let relay_addr = relay.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+        {
+            let seen = seen.clone();
+            std::thread::spawn(move || {
+                let (client, _) = relay.accept().unwrap();
+                let host = TcpStream::connect(addr).unwrap();
+                let (mut c2, mut h2) = (client.try_clone().unwrap(), host.try_clone().unwrap());
+                std::thread::spawn(move || std::io::copy(&mut c2, &mut h2));
+                let (mut h, mut c) = (host, client);
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = h.read(&mut buf) {
+                    if n == 0 || c.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    seen.lock().unwrap().extend_from_slice(&buf[..n]);
+                }
+                let _ = c.shutdown(std::net::Shutdown::Both);
+            });
+        }
+        let (raw, mut out, mut input) = open(relay_addr, 0x5e55).unwrap();
+        out.write_all(b"LIST\nGET 0\nGET 1\nGET 7\nGET ../../etc/passwd\nGET maps/M/global.cfg\nBYE\n").unwrap();
+        out.flush().unwrap();
+        let len = read_reply(&mut input).unwrap().unwrap();
+        let mut body = vec![0u8; len as usize];
+        input.read_exact(&mut body).unwrap();
+        let manifest: Manifest = serde_json::from_slice(&body).unwrap();
+        assert_eq!(manifest.entries.len(), 2);
+        for (k, want) in [marker.clone(), small.clone()].into_iter().enumerate() {
+            let n = read_reply(&mut input).unwrap().unwrap();
+            assert_eq!(n, manifest.entries[k].size);
+            let mut data = vec![0u8; n as usize];
+            input.read_exact(&mut data).unwrap();
+            assert_eq!(data, want);
+        }
+        // (files by their number in the list only: no name is ever opened)
+        for _ in 0..3 {
+            assert!(read_reply(&mut input).unwrap_err().contains("no such file"));
+        }
+        let _ = raw.shutdown(std::net::Shutdown::Both);
+        std::thread::sleep(Duration::from_millis(100));
+        let wire = seen.lock().unwrap().clone();
+        assert!(wire.len() > marker.len(), "{} bytes seen", wire.len());
+        assert!(!wire.windows(16).any(|w| w == b"PLAINTEXT-MARKER"), "plain text on the wire");
+        assert!(!wire.windows(10).any(|w| w == b"global.cfg"), "a file name on the wire");
+        // another session's id gets nothing
+        assert!(open(addr, 0x5e56).err().unwrap().contains("not this session"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_old_peer_is_refused_clearly() {
+        // a game of the old protocol, at a new host
+        let (addr, dir) = serve_files(0x01d, &[("maps/M/global.cfg", b"x".to_vec())]);
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.write_all(format!("OMSIMODS/1 {}\n", omsi_net::session_hex(0x01d)).as_bytes()).unwrap();
+        let reply = read_reply(&mut BufReader::new(s)).unwrap_err();
+        assert!(reply.contains("update openOMSI"), "{reply}");
+        std::fs::remove_dir_all(&dir).ok();
+        // a host of the old protocol answers this one's greeting as it answered any other
+        let old = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let old_addr = old.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (s, _) = old.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(s.try_clone().unwrap()).read_line(&mut line).unwrap();
+            (&s).write_all(b"ERR not this session\n").unwrap();
+        });
+        let err = open(old_addr, 0x01d).err().unwrap();
+        assert!(err.contains("older") && err.contains("same version"), "{err}");
     }
 
     #[test]

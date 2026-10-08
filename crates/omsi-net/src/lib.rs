@@ -712,8 +712,10 @@ pub struct WorldInfo {
     pub time: f64,
     /// Weather file, empty for the map's default.
     pub weather: String,
-    /// The season the player chose (`spring`, `summer`, `autumn`, `winter`), empty when
-    /// the date decides as in OMSI.
+    /// The season the player chose (`spring`, `summer`, `autumn`, `winter`), with its
+    /// phase when not the middle (`autumn-late`, `spring-early`: an older version reads
+    /// no season in that and goes by the date, which is the host's phase date), empty
+    /// when the date decides as in OMSI.
     pub season: String,
 }
 
@@ -1459,7 +1461,7 @@ impl LanSession {
             trying: 0.0,
             lost_at: None,
             timed_out: false,
-            join_timeout: std::env::var("OMSI_LAN_JOIN_TIMEOUT")
+            join_timeout: omsi_cfg::flags::OMSI_LAN_JOIN_TIMEOUT.live_var()
                 .ok()
                 .and_then(|v| v.parse::<f32>().ok())
                 .filter(|v| *v > 0.0)
@@ -1585,7 +1587,7 @@ impl LanSession {
                 s.host = None;
                 // `OMSI_BRIDGE_ONLY`: forget the code's own addresses, so that only what the
                 // rendezvous tells is tried (to check that path)
-                if std::env::var_os("OMSI_BRIDGE_ONLY").is_some() {
+                if omsi_cfg::flags::OMSI_BRIDGE_ONLY.live_os().is_some() {
                     s.candidates.clear();
                 }
             }
@@ -1723,17 +1725,24 @@ impl LanSession {
         self.sent.get()
     }
 
-    /// The game's clock: what the host's welcomes and clock messages say.
-    /// The host's weather changed (the clients take it up with the next clock message).
-    pub fn set_weather(&mut self, weather: &str) {
-        self.world.weather = weather.to_string();
-    }
-
     /// The weather the session runs with.
     pub fn weather(&self) -> &str {
         &self.world.weather
     }
 
+    /// The host's weather changed: a host sends it with a clock message at once, not with the
+    /// next one of every five seconds.
+    pub fn set_weather(&mut self, weather: &str) {
+        let weather = clean_text(&weather.trim().replace('\\', "/"), 260);
+        if self.world.weather != weather {
+            self.world.weather = weather;
+            if self.role == Role::Host {
+                self.clock_acc = CLOCK_EVERY;
+            }
+        }
+    }
+
+    /// The game's clock: what the host's welcomes and clock messages say.
     pub fn set_clock(&mut self, date: &str, time: f64) {
         if self.world.date != date {
             self.world.date = date.to_string();

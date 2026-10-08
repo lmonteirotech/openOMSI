@@ -654,8 +654,9 @@ pub(crate) fn data_dir() -> Option<PathBuf> {
 
 /// The status file of this game process.
 fn status_path() -> Option<PathBuf> {
-    let id = omsi_cfg::env::var("OMSI_INSTANCE")
-        .ok()
+    let id = omsi_cfg::flags::OMSI_INSTANCE
+        .var()
+        .map(str::to_string)
         .filter(|s| {
             !s.is_empty()
                 && s.len() <= 64
@@ -769,7 +770,7 @@ pub fn open_public_gateway(session: &LanSession, info: omsi_net::ws::ServerInfo,
     if let Ok(mut w) = WS_PATH.lock() {
         *w = Some(WsPath { gateway: Some(gateway), tunnel: None, _client: None, url: None });
     }
-    if !want_tunnel || omsi_cfg::env::var_os("OMSI_NO_TUNNEL").is_some() || omsi_cfg::env::var_os("OMSI_NO_BRIDGE").is_some() {
+    if !want_tunnel || omsi_cfg::flags::OMSI_NO_TUNNEL.is_set() || omsi_cfg::flags::OMSI_NO_BRIDGE.is_set() {
         return;
     }
     // (in the background: cloudflared is fetched first when it is not installed)
@@ -793,7 +794,7 @@ pub fn open_public_gateway(session: &LanSession, info: omsi_net::ws::ServerInfo,
         let mut checked = Instant::now();
         // the official server (`OMSI_OFFICIAL_KEY`: its signing key's file) says where it is
         // reached every five minutes, for the players who type `openomsi`
-        let official = omsi_cfg::env::var_os("OMSI_OFFICIAL_KEY").and_then(|p| std::fs::read(&p).map_err(|e| log::warn!("official key {}: {e}", std::path::Path::new(&p).display())).ok());
+        let official = omsi_cfg::flags::OMSI_OFFICIAL_KEY.os().and_then(|p| std::fs::read(p).map_err(|e| log::warn!("official key {}: {e}", std::path::Path::new(&p).display())).ok());
         let mut announced: Option<(String, Instant)> = None;
         loop {
             let now = url.lock().ok().and_then(|u| u.clone());
@@ -1402,6 +1403,14 @@ fn host_weather(args: &Args, weather: &str) -> Result<Option<String>, String> {
     } else {
         Err(format!("the host's weather {w} is not installed here"))
     }
+}
+
+/// Whether the host's weather `host` (from its clock message) is news to a client whose own
+/// is `local` and that last took up `seen`. Empty is a weather too: the map's default.
+fn runtime_weather_changed(host: &str, local: Option<&str>, seen: Option<&str>) -> bool {
+    let norm = |s: &str| s.trim().replace('\\', "/").to_ascii_lowercase();
+    let host_norm = norm(host);
+    host_norm != norm(local.unwrap_or("")) && seen.is_none_or(|last| norm(last) != host_norm)
 }
 
 /// Take the host's world (a joining player, before the map is loaded): the date, the time
@@ -2482,12 +2491,19 @@ fn remote_bus_file(args: &Args, bus: &str) -> Result<PathBuf, String> {
     if !roots.iter().any(|r| path.starts_with(r)) {
         return Err("not inside a content folder".into());
     }
-    let md = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-    if !md.is_file() {
-        return Err("not a file".into());
-    }
-    if md.len() > MAX_VEHICLE_FILE {
-        return Err(format!("{} bytes is too much for a vehicle file", md.len()));
+    // (a file in an archive or among the host's mods has no metadata of its own)
+    let len = match omsi_cfg::vfs::file_size(&path) {
+        Some(len) => len,
+        None => {
+            let md = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+            if !md.is_file() {
+                return Err("not a file".into());
+            }
+            md.len()
+        }
+    };
+    if len > MAX_VEHICLE_FILE {
+        return Err(format!("{len} bytes is too much for a vehicle file"));
     }
     Ok(path)
 }
@@ -2702,7 +2718,7 @@ impl RemoteVehicle {
     fn interpolated(&mut self) -> Option<Pose> {
         // (`OMSI_NO_INTERP=1`: the old way, for comparing)
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *OFF.get_or_init(|| omsi_cfg::env::var_os("OMSI_NO_INTERP").is_some()) {
+        if *OFF.get_or_init(|| omsi_cfg::flags::OMSI_NO_INTERP.is_set()) {
             return None;
         }
         let off = self.offset?;
@@ -2832,6 +2848,19 @@ fn release(
     }
 }
 
+/// The rear sections of another game's vehicle where that game has them (`rear`: position
+/// and heading of each), each leaning so that it meets the part in front at their joint
+/// (`Trailer::set_remote_pose`).
+fn place_remote_rear(v: &mut omsi_sim::VehicleInstance, rear: &[(DVec3, f64)]) {
+    let mut lead = (v.position, v.body_rotation());
+    for (i, cur) in rear.iter().enumerate() {
+        let Some(t) = v.trailers.get_mut(i) else { break };
+        let c = t.coupling_point(lead.0, lead.1);
+        t.set_remote_pose(cur.0, cur.1, c);
+        lead = (t.position, t.body_rotation());
+    }
+}
+
 fn ease_heading(from: f64, to: f64, k: f64) -> f64 {
     let dh = (to - from + 540.0).rem_euclid(360.0) - 180.0;
     if dh.abs() > 90.0 {
@@ -2868,11 +2897,7 @@ fn drive_remote(rv: &mut RemoteVehicle, pose: &Pose, dt: f32, exact: bool) {
         rv.target = (rv.vehicle.position, rv.vehicle.heading);
         rv.pose_seen = (rv.vehicle.position, Instant::now());
         rv.rear = pose.rear.iter().map(|q| (DVec3::new(q.x, q.y, q.z), q.heading as f64)).collect();
-        for (i, cur) in rv.rear.iter().enumerate() {
-            if let Some(t) = rv.vehicle.trailers.get_mut(i) {
-                t.set_pose(cur.0, cur.1);
-            }
-        }
+        place_remote_rear(&mut rv.vehicle, &rv.rear);
         rv.doors = pose.doors.clone();
         rv.suspension = pose.suspension.clone();
         rv.values = pose.values.clone();
@@ -2896,16 +2921,14 @@ fn drive_remote(rv: &mut RemoteVehicle, pose: &Pose, dt: f32, exact: bool) {
         rv.vehicle.heading = ease_heading(rv.vehicle.heading, rv.target.1, kd);
         // the rear sections where the other game has them
         rv.rear.resize(pose.rear.len(), (DVec3::ZERO, 0.0));
-        for (i, (cur, q)) in rv.rear.iter_mut().zip(pose.rear.iter()).enumerate() {
+        for (cur, q) in rv.rear.iter_mut().zip(pose.rear.iter()) {
             // (carried on with the bus: a rear section follows the same way)
             let tgt = (DVec3::new(q.x, q.y, q.z) + ahead, q.heading as f64);
             let jump = cur.0 == DVec3::ZERO || (tgt.0 - cur.0).length() > 25.0;
             cur.0 = if jump { tgt.0 } else { cur.0 + (tgt.0 - cur.0) * kd };
             cur.1 = if jump { tgt.1 } else { ease_heading(cur.1, tgt.1, kd) };
-            if let Some(t) = rv.vehicle.trailers.get_mut(i) {
-                t.set_pose(cur.0, cur.1);
-            }
         }
+        place_remote_rear(&mut rv.vehicle, &rv.rear);
         glide(&mut rv.doors, &pose.doors, k);
         glide(&mut rv.suspension, &pose.suspension, k);
         glide(&mut rv.values, &pose.values, k);
@@ -2992,6 +3015,7 @@ fn drive_remote(rv: &mut RemoteVehicle, pose: &Pose, dt: f32, exact: bool) {
         // already in those values - the frame only runs the AI half of the script.
         at_station_side: 0.0,
         priority_warning: false,
+        engine_off: false,
     };
     // and every other variable of theirs, as their scripts have it (`omsi_net::vars`)
     pinned.extend(rv.synced.iter().filter(|(id, _)| !rv.smooth.contains(*id)).map(|(id, v)| (*id as VarId, *v)));
@@ -3008,7 +3032,7 @@ fn drive_remote(rv: &mut RemoteVehicle, pose: &Pose, dt: f32, exact: bool) {
 
 /// Our vehicle's variables to the others, and theirs taken into the copies drawn here.
 fn sync_vars(lan: &mut LanSession, game: &mut LanGame, player: Option<&Player>, dt: f32) {
-    if omsi_cfg::env::var_os("OMSI_NO_VAR_SYNC").is_some() {
+    if omsi_cfg::flags::OMSI_NO_VAR_SYNC.is_set() {
         return;
     }
     if let Some(p) = player {
@@ -3026,7 +3050,7 @@ fn sync_vars(lan: &mut LanSession, game: &mut LanGame, player: Option<&Player>, 
         let strings: Vec<String> = t.strings.iter().map(|id| strs.get(*id as usize).cloned().unwrap_or_default()).collect();
         lan.send_vars(t.hash, &t.floats, &floats, &t.strings, &strings, dt);
         // `OMSI_DEBUG_VAR_SYNC=<variable>`: ours every two seconds, theirs as it came
-        if let Some(name) = omsi_cfg::env::var("OMSI_DEBUG_VAR_SYNC").ok() {
+        if let Some(name) = omsi_cfg::flags::OMSI_DEBUG_VAR_SYNC.var() {
             game.vars_log += dt;
             if game.vars_log > 2.0 {
                 game.vars_log = 0.0;
@@ -3169,6 +3193,7 @@ pub fn tick(
     mut scene: Option<&mut Scene>,
     mut traffic: Option<&mut crate::traffic::Traffic>,
     mut humans: Option<&mut crate::humans::Humans>,
+    view: &mut crate::view_sync::SimView,
     duty: Option<(&str, &str)>,
     frame: &Frame,
 ) -> Vec<WorldUpdate> {
@@ -3212,6 +3237,7 @@ pub fn tick(
         scene.as_deref_mut(),
         traffic.as_deref_mut(),
         humans.as_deref_mut(),
+        view,
         player.as_deref().map(|p| p.vehicle.position),
     );
     // the host's world: taken over at a late welcome, the clock kept in step
@@ -3222,11 +3248,11 @@ pub fn tick(
             lan.take_host_clock();
         } else if let Some(h) = lan.take_host_clock() {
             // the host changed its weather (its administration): ours follows
-            let norm = |s: &str| s.trim().replace('\\', "/").to_ascii_lowercase();
-            if !h.world.weather.is_empty() && norm(&h.world.weather) != norm(args.weather.as_deref().unwrap_or("")) && game.weather_seen.as_deref() != Some(h.world.weather.as_str()) {
+            if runtime_weather_changed(&h.world.weather, args.weather.as_deref(), game.weather_seen.as_deref()) {
                 game.weather_seen = Some(h.world.weather.clone());
                 if let Ok(wt) = host_weather(args, &h.world.weather) {
-                    log::info!("LAN: the host's weather is now {}", h.world.weather);
+                    let shown = if h.world.weather.trim().is_empty() { "the map's default" } else { h.world.weather.as_str() };
+                    log::info!("LAN: the host's weather is now {shown}");
                     updates.push(WorldUpdate::Weather(wt));
                 }
             }
@@ -3277,7 +3303,7 @@ pub fn tick(
     // OMSI_LAN_SAY="30=Hallo;45=Tschüss": chat lines said at these seconds of the session
     // (for tests of games that have no keyboard: offscreen runs)
     game.clock += dt;
-    if let Ok(script) = omsi_cfg::env::var("OMSI_LAN_SAY") {
+    if let Some(script) = omsi_cfg::flags::OMSI_LAN_SAY.var() {
         for item in script.split(';') {
             if let Some((at, text)) = item.split_once('=') {
                 if at
@@ -3436,7 +3462,7 @@ pub fn tick(
         // never faded by an alpha variable the AI scripts left at 0, the bellows skinned
         let inside = frame.inside_of == Some(*id);
         // OMSI_TRACE_REMOTE=<file.csv>: where each other player's bus is drawn, every frame
-        if let Ok(path) = omsi_cfg::env::var("OMSI_TRACE_REMOTE") {
+        if let Some(path) = omsi_cfg::flags::OMSI_TRACE_REMOTE.var() {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
                 let _ = writeln!(f, "{:.4},{id},{:.3},{:.3},{:.3},{:.2},{}", lan_now(), rv.vehicle.position.x, rv.vehicle.position.y, rv.vehicle.position.z, rv.vehicle.heading, rv.offset.is_some());
@@ -3451,7 +3477,7 @@ pub fn tick(
 /// `OMSI_DEBUG_LAN`: every few seconds, what we know of every player, what their bus
 /// shows and plays here, and the bytes that went over the network.
 fn debug_log(lan: &LanSession, game: &mut LanGame, dt: f32, frame: &Frame) {
-    if omsi_cfg::env::var_os("OMSI_DEBUG_LAN").is_none() {
+    if !omsi_cfg::flags::OMSI_DEBUG_LAN.is_set() {
         return;
     }
     game.log_t -= dt;
@@ -3720,7 +3746,7 @@ pub fn hud_lines(lan: &LanSession, _game: &LanGame, _player: Option<&Player>) ->
         lines.push(format!("Online: {w}"));
     }
     // OMSI_DEBUG_LAN: what the HUD shows, every few seconds
-    if omsi_cfg::env::var_os("OMSI_DEBUG_LAN").is_some() {
+    if omsi_cfg::flags::OMSI_DEBUG_LAN.is_set() {
         HUD_LOG.with(|t| {
             let now = Instant::now();
             if t.get()
@@ -3741,6 +3767,7 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
+    include!("../../../tools/test-support/original_root.rs");
     use super::*;
 
     /// The natural weather and the cycle need no file: a client takes them from any host.
@@ -3753,6 +3780,18 @@ mod tests {
         }
         assert_eq!(host_weather(&args, ""), Ok(None));
         assert!(host_weather(&args, "weather/none_such.owt").is_err());
+    }
+
+    #[test]
+    fn runtime_weather_change_detects_custom_and_clearing_to_default() {
+        let custom = "custom:vis=5000;br=0.80;wd=90;ws=4.0;t=22.0;rh=70;p=1013;c=2;cb=120;pt=1;pi=80;wet=0.50;snow=0;snowroad=0";
+        assert!(runtime_weather_changed(custom, Some("Weather/#CAVOK.owt"), None));
+        assert!(!runtime_weather_changed(custom, Some(custom), None));
+        assert!(!runtime_weather_changed(custom, Some(&custom.to_ascii_uppercase()), None));
+        assert!(!runtime_weather_changed(custom, Some("Weather/#CAVOK.owt"), Some(custom)));
+        // empty is a weather too: the host went back to the map's default
+        assert!(runtime_weather_changed("", Some(custom), Some(custom)));
+        assert!(!runtime_weather_changed("", None, Some(custom)));
     }
 
     /// Every session starts with every bus offered: a server joined before (on a phone the
@@ -3825,15 +3864,11 @@ mod tests {
     /// What is seen comes before what is heard in the capped values list: the AA-FR Agora
     /// L's sound variables filled it in name order before its roller blind's scroll.
     #[test]
+    #[ignore = "needs OMSI_ROOT with AA-FR_BusBundle (not part of the stock install)"]
     fn the_roller_blind_scroll_is_in_the_sync_table() {
-        let root = omsi_cfg::env::var_os("OMSI_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("../../../OMSI 2 Original"));
+        let root = original_root();
         let bus = root.join("Vehicles/AA-FR_BusBundle/2002_Agora_L_4d_main.bus");
-        if !bus.exists() {
-            eprintln!("skipped: no {}", bus.display());
-            return;
-        }
+        require_content(&[&bus]);
         let ty = omsi_sim::VehicleType::load(&root, &bus).expect("Agora L");
         let t = SyncTable::new(&ty, &[]);
         assert!(t.values.len() <= omsi_net::wire::MAX_VALUES);
@@ -3846,16 +3881,12 @@ mod tests {
     /// and outside sounds (the AA-FR Agora L's rear section stood dark and silent in the
     /// other players' games).
     #[test]
+    #[ignore = "needs OMSI_ROOT with AA-FR_BusBundle (not part of the stock install)"]
     fn the_rear_section_is_in_the_sync_table() {
-        let root = omsi_cfg::env::var_os("OMSI_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("../../../OMSI 2 Original"));
+        let root = original_root();
         let bus = root.join("Vehicles/AA-FR_BusBundle/2002_Agora_L_3d_main.bus");
         let trail = root.join("Vehicles/AA-FR_BusBundle/2002_Agora_L_3d_trail.bus");
-        if !bus.exists() || !trail.exists() {
-            eprintln!("skipped: no {}", bus.display());
-            return;
-        }
+        require_content(&[&bus, &trail]);
         let ty = omsi_sim::VehicleType::load(&root, &bus).expect("Agora L");
         let part = Arc::new(omsi_sim::VehicleType::load(&root, &trail).expect("Agora L trail"));
         let alone = SyncTable::new(&ty, &[]);
