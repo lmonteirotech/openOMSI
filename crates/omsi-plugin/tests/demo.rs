@@ -132,7 +132,7 @@ fn host_frames() {
 /// `omsi_demo_plugin.dll` built for i686-pc-windows-gnu (see docs/PLUGINS.md), and Wine.
 #[test]
 fn windows_dll_under_wine() {
-    let Some(dir) = std::env::var_os("OMSI_TEST_WINE_DIR").map(PathBuf::from) else { return };
+    let Some(dir) = omsi_cfg::flags::OMSI_TEST_WINE_DIR.live_os().map(PathBuf::from) else { return };
     let hosts = HostConfig::detect();
     let wine = hosts.runner.clone().or_else(|| cfg!(windows).then(PathBuf::new));
     let runner = if cfg!(windows) { None } else { Some(wine.expect("wine on the path")) };

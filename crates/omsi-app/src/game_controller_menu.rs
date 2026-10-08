@@ -1,6 +1,7 @@
 //! In-game controller configuration. Edits are saved before installing mappings on the
 //! existing controller; opening this UI never creates another hardware connection.
 use crate::controllers::{DeviceCfg, Func};
+use crate::gamepad_profile::{self, PadKind};
 use crate::game_lists::{ListKind, Move, HEADING};
 use crate::App;
 
@@ -9,7 +10,7 @@ pub(crate) fn is_controller_list(kind: Option<&ListKind>) -> bool {
 }
 
 fn configurations(app: &App) -> Vec<DeviceCfg> {
-    app.controllers.as_ref().map(|c| c.configuration()).unwrap_or_else(|| crate::controllers::read_cfg(&app.args.root))
+    app.input.controllers.as_ref().map(|c| c.configuration()).unwrap_or_else(|| crate::controllers::read_cfg(&app.args.root))
 }
 
 fn index(devices: &[DeviceCfg], name: &str) -> Option<usize> {
@@ -25,10 +26,12 @@ fn event_names(app: &App, device: &DeviceCfg) -> Vec<(String, String)> {
         .chain(crate::game_lists::keyboard_actions(app))
         .chain(app.player.as_ref().into_iter().flat_map(|p| p.vehicle.ty.program.trigger_names()))
         .chain(["kw_s_R_fest", "kw_s_1_fest", "kw_s_2_fest", "kw_s_3_fest", "kw_s_4_fest", "kw_s_5_fest", "kw_s_6_fest", "kw_s_7_fest", "kw_s_8_fest", "kw_s_9_fest", "kw_s_10_fest",
-                "gear_up", "gear_down", "view_look_left", "view_look_right", "view_look_up", "view_look_down", "view_toggle_viewpoint", "view_driver", "view_outside", "view_passenger", "voice_radio"].into_iter().map(str::to_string)) {
+                "gear_up", "gear_down", "view_look_left", "view_look_right", "view_look_up", "view_look_down", "view_toggle_viewpoint", "view_driver", "view_outside", "view_passenger", "voice_radio", "open_menu"].into_iter().map(str::to_string)) {
         if !action.is_empty() && !events.iter().any(|(a, _)| a.eq_ignore_ascii_case(&action)) {
             let label = if action.eq_ignore_ascii_case("voice_radio") {
                 "Multiplayer: bus radio (hold)".into()
+            } else if action.eq_ignore_ascii_case("open_menu") {
+                "Open / close the main menu".into()
             } else {
                 names.control(&action)
             };
@@ -44,9 +47,53 @@ fn row(name: &str, value: &str, desc: &str, action: String) -> (String, String) 
 }
 
 const DEVICE_TABS: [&str; 4] = ["Device", "Axes and pedals", "Buttons", "Force feedback"];
-const COMMON_TABS: [&str; 3] = ["Devices", "Driving", "Force feedback"];
+pub(crate) const COMMON_TABS: [&str; 4] = ["Devices", "Driving", "Gamepad", "Force feedback"];
 const AXES: [&str; 8] = ["X axis", "Y axis", "Z axis", "X rotation", "Y rotation", "Z rotation", "Slider 1", "Slider 2"];
+const PAD_TYPES: [&str; 4] = ["auto", "xbox", "ps4", "ps5"];
 type Rows = Vec<(String, String)>;
+
+/// The family the gamepad's buttons are named for: the setting, else the first pad found,
+/// else Xbox (what most players hold).
+fn pad_kind(app: &App, connected: &[crate::controllers::Connected]) -> PadKind {
+    PadKind::from_setting(&app.settings.pad_type)
+        .or_else(|| connected.iter().find_map(|c| PadKind::detect(&c.name, c.hardware_id)))
+        .unwrap_or(PadKind::Xbox)
+}
+
+/// The Gamepad page: which pad it is, how its stick steers and what its buttons do.
+fn gamepad_rows(app: &App, connected: &[crate::controllers::Connected]) -> Rows {
+    let mut out: Rows = Vec::new();
+    out.push(("Controller".into(), HEADING.into()));
+    let found: Vec<_> = connected.iter().filter_map(|c| PadKind::detect(&c.name, c.hardware_id).map(|k| (c, k))).collect();
+    for (c, k) in &found {
+        out.push((crate::game_lists::row(&c.name, 'i', k.title(), "Found by its name and USB ids", None), "noop".into()));
+    }
+    if found.is_empty() {
+        out.push((crate::game_lists::row("No Xbox or PlayStation pad found", 'i', "", "Connect a pad, or choose its type below to see the button names", None), "noop".into()));
+    }
+    let shown = match PadKind::from_setting(&app.settings.pad_type) {
+        Some(k) => k.title().to_string(),
+        None => format!("Automatic ({})", pad_kind(app, connected).title()),
+    };
+    out.push((crate::game_lists::row("Controller type", 'o', &shown, "Names the buttons below for the pad you hold: Automatic, Xbox, PlayStation 4 or PlayStation 5", None), "pad_type".into()));
+    out.push(("Steering and view".into(), HEADING.into()));
+    out.extend([
+        crate::game_lists::slider_row(app, "pad_steer_speed", "Steering speed", "Seconds the stick takes to turn the wheel from the middle to the full lock - more is smoother", &|v| format!("{v:.1} s")),
+        crate::game_lists::slider_row(app, "pad_steer_smooth", "Stick smoothing", "Evens out the small shakes of the stick (off: the stick as it reads)", &|v| if v <= 0.0 { "Off".to_string() } else { format!("{v:.0} ms") }),
+        crate::game_lists::slider_row(app, "pad_deadzone", "Stick dead zone", "Ignore movement round the stick's centre (raise it if the bus steers by itself)", &|v| format!("{:.0} %", v * 100.0)),
+        crate::game_lists::switch_row(app, "pad_steer_linear", "Stick steers like a wheel", "The wheel where the stick points, as far at any speed: for a wheel the system calls an Xbox controller"),
+        crate::game_lists::switch_row(app, "right_stick_look", "Right stick turns the view", "Switch off to keep the camera still while you steer"),
+    ].into_iter().flatten());
+    out.push(("Buttons".into(), HEADING.into()));
+    out.extend(crate::game_lists::switch_row(app, "pad_buttons", "Default buttons", "A gamepad with no buttons set up drives the cabin with these; set up its buttons under Devices to use your own"));
+    out.push((crate::game_lists::row("Left stick / triggers", 'i', "Steer / brake, throttle", "Left stick steers, left trigger brakes, right trigger is the throttle", None), "noop".into()));
+    let kind = pad_kind(app, connected);
+    for b in gamepad_profile::PRESET_BUTTONS {
+        let Some(action) = gamepad_profile::default_action(b) else { continue };
+        out.push((crate::game_lists::row(kind.label(b), 'i', gamepad_profile::action_text(action), "", None), "noop".into()));
+    }
+    out
+}
 
 /// The sidebar uses the same pages and indices as keyboard/mouse tab navigation.
 pub(crate) fn pages(app: &App, kind: &ListKind) -> Option<(Vec<(&'static str, Rows)>, usize)> {
@@ -117,7 +164,7 @@ fn action_rows(events: Vec<(String, String)>) -> Rows {
 
 pub(crate) fn items(app: &App, kind: &ListKind) -> Rows {
     let devices = configurations(app);
-    let connected = app.controllers.as_ref().map(|c| c.connected()).unwrap_or_default();
+    let connected = app.input.controllers.as_ref().map(|c| c.connected()).unwrap_or_default();
     let mut out = Vec::new();
     match kind {
         ListKind::ControllerDevices(tab) => match (*tab).min(COMMON_TABS.len() - 1) {
@@ -143,8 +190,7 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Rows {
                 out.push(("Steering".into(), HEADING.into()));
                 out.extend([
                     crate::game_lists::slider_row(app, "ctrl_deadzone", "Dead zone", "Ignore movement around the centre or at pedal rest", &|v| format!("{:.0} %", v * 100.0)),
-                    crate::game_lists::switch_row(app, "pad_steer_linear", "Stick steers like a wheel", "The wheel where the stick points, as far at any speed: for a wheel the system calls an Xbox controller"),
-                    crate::game_lists::slider_row(app, "pad_steer_smooth", "Stick steering smoothing", "Evens out a gamepad stick's small shakes (off: the stick as it reads)", &|v| if v <= 0.0 { "Off".to_string() } else { format!("{v:.0} ms") }),
+                    crate::game_lists::switch_row(app, "arrows_switch_cams", "Arrows switch the cameras", "With a wheel, Left/Right change the interior camera as without one, instead of turning the head"),
                     crate::game_lists::slider_row(app, "wheel_range", "Wheel rotation", "Your wheel's rotation from lock to lock", &|v| format!("{v:.0}°")),
                     crate::game_lists::slider_row(app, "wheel_lock", "Full lock at", "Rotation for the bus's full lock", &|v| if v < 45.0 { "OMSI".into() } else { format!("{v:.0}°") }),
                 ].into_iter().flatten());
@@ -154,6 +200,7 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Rows {
                     crate::game_lists::slider_row(app, "pedal_b", "Brake pedal strength", "Pedal response", &|v| format!("x{v}")),
                 ].into_iter().flatten());
             }
+            2 => out = gamepad_rows(app, &connected),
             _ => {
                 out.extend([
                     crate::game_lists::switch_row(app, "ff", "Force feedback and vibration", "Enable steering forces and gamepad rumble"),
@@ -260,8 +307,8 @@ fn switched(now: bool, mv: Move) -> bool {
 fn save(app: &mut App, devices: Vec<DeviceCfg>) {
     match crate::controllers::save_cfg(&devices) {
         Ok(()) => {
-            if let Some(c) = app.controllers.as_mut() { c.install_cfg(devices); }
-            app.last_ctl_steer = None;
+            if let Some(c) = app.input.controllers.as_mut() { c.install_cfg(devices); }
+            app.input.last_ctl_steer = None;
             app.service_msg = Some(("Controller configuration saved and applied".into(), 3.0));
         }
         Err(e) => app.service_msg = Some((format!("Controller configuration was not saved: {e}"), 6.0)),
@@ -272,6 +319,12 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str, mv: Move) -> Opt
     let (verb, arg) = action.split_once(' ').unwrap_or((action, ""));
     if action == "back" { return parent(kind); }
     if let ListKind::ControllerDevices(_) = kind {
+        if verb == "pad_type" {
+            let to = step(PAD_TYPES.iter().position(|t| *t == app.settings.pad_type).unwrap_or(0), PAD_TYPES.len(), mv);
+            app.settings.pad_type = PAD_TYPES[to].into();
+            crate::game_lists::remember_setting("pad_type", PAD_TYPES[to]);
+            return Some(kind.clone());
+        }
         if crate::game_lists::option_do(app, verb, arg, mv) { return Some(kind.clone()); }
         if !matches!(mv, Move::Next) { return Some(kind.clone()); }
         return Some(match verb {
@@ -279,8 +332,8 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str, mv: Move) -> Opt
             "reload_controllers" => {
                 match crate::controllers::read_cfg_checked(&app.args.root) {
                     Ok(devices) => {
-                        if let Some(c) = app.controllers.as_mut() { c.install_cfg(devices); }
-                        app.last_ctl_steer = None;
+                        if let Some(c) = app.input.controllers.as_mut() { c.install_cfg(devices); }
+                        app.input.last_ctl_steer = None;
                         app.service_msg = Some(("Saved controller mappings reloaded".into(), 3.0));
                     }
                     Err(e) => app.service_msg = Some((format!("Controller mappings were not reloaded: {e}"), 6.0)),
@@ -377,7 +430,7 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str, mv: Move) -> Opt
 
 /// Called after the existing controller's single poll for this frame.
 pub(crate) fn frame(app: &mut App) {
-    if matches!(app.list_kind, Some(ListKind::ControllerDevices(_) | ListKind::Controller(..) | ListKind::ControllerAxis(..))) {
+    if matches!(app.menus.list_kind, Some(ListKind::ControllerDevices(_) | ListKind::Controller(..) | ListKind::ControllerAxis(..))) {
         thread_local! {
             static LAST_REFRESH: std::cell::RefCell<std::time::Instant> = std::cell::RefCell::new(std::time::Instant::now());
         }
@@ -390,8 +443,8 @@ pub(crate) fn frame(app: &mut App) {
         if refresh { app.refresh_list(); }
         return;
     }
-    let Some(ListKind::ControllerCapture(name)) = app.list_kind.clone() else { return };
-    let pressed = app.controllers.as_ref().and_then(|c| c.raw_buttons.iter().find(|(n, b, down)|
+    let Some(ListKind::ControllerCapture(name)) = app.menus.list_kind.clone() else { return };
+    let pressed = app.input.controllers.as_ref().and_then(|c| c.raw_buttons.iter().find(|(n, b, down)|
         *down && *b < crate::controllers::HAT_BUTTONS + 16 && crate::controllers::names_match(n, &name)).map(|(_, b, _)| *b));
     if let Some(button) = pressed {
         app.open_list(ListKind::ControllerButtonSettings(name, button));

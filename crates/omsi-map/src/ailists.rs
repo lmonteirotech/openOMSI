@@ -423,6 +423,7 @@ pub fn parse_signalroutes(f: &CfgFile) -> Vec<SignalRoute> {
 
 #[cfg(test)]
 mod tests {
+    include!("../../../tools/test-support/original_root.rs");
     use super::*;
 
     #[test]
@@ -436,13 +437,11 @@ mod tests {
     /// Spandau's 1991 timetable change takes line "5 & 5N" off: on any later date the chrono
     /// that does it is active and names the line; before it, nothing takes the line off.
     #[test]
+    #[ignore = "needs the original OMSI 2 install (OMSI_ROOT)"]
     fn spandau_takes_line_5_off_in_1991() {
-        let root = std::env::var_os("OMSI_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("../../../OMSI 2 Original"));
+        let root = original_root();
         let map = root.join("maps/Berlin-Spandau");
-        if !map.join("Chrono").is_dir() {
-            eprintln!("skipped: no {}", map.display());
-            return;
-        }
+        require_content(&[&map.join("Chrono")]);
         let later = chrono_deactivated_lines(&active_chrono_dirs(&map, 20260917));
         let by = later.iter().find(|(l, _)| l == "5 & 5N").map(|(_, d)| d.file_name().unwrap().to_string_lossy().into_owned());
         assert_eq!(by.as_deref(), Some("1000_FPW_19910602"), "{later:?}");
@@ -488,12 +487,13 @@ mod legacy_tests {
 
 #[cfg(test)]
 mod chrono_hof_tests {
+    include!("../../../tools/test-support/original_root.rs");
+
     #[test]
+    #[ignore = "needs the original OMSI 2 install (OMSI_ROOT)"]
     fn berlin_changes_its_depot_file_with_the_date() {
-        let dir = std::path::Path::new("../../../OMSI 2 Original/maps/Berlin-Spandau");
-        if !dir.is_dir() {
-            return;
-        }
+        let dir = &original_root().join("maps/Berlin-Spandau");
+        require_content(&[dir]);
         let at = |d| super::depot_hof_on(dir, d).unwrap_or_default();
         assert_eq!(at(19940601), "Spandau 1994");
         assert_ne!(at(19870101), "Spandau 1994");

@@ -2255,7 +2255,7 @@ impl DriveGrid {
 /// the road's edge too, and the sky showed through along kerbs and car parks.
 pub fn road_cut() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("OMSI_ROAD_CUT").is_some())
+    *ON.get_or_init(|| omsi_cfg::flags::OMSI_ROAD_CUT.live_os().is_some())
 }
 
 /// How far below the ground a surface may lie and still take the ground away: enough for a

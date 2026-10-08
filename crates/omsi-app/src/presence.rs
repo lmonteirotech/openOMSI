@@ -60,7 +60,7 @@ fn system() -> &'static str {
 
 /// Whether the player lets the game be counted (`presence`, on unless switched off).
 fn allowed() -> bool {
-    if omsi_cfg::env::var_os("OMSI_NO_PRESENCE").is_some() {
+    if omsi_cfg::flags::OMSI_NO_PRESENCE.is_set() {
         return false;
     }
     let text = std::fs::read_to_string(omsi_launcher_lib::data_dir().join("settings.cfg")).ok();
@@ -98,7 +98,7 @@ impl Presence {
             log::info!("presence: not counted on the website (setting presence=0)");
             return None;
         }
-        let base = omsi_cfg::env::var("OMSI_PRESENCE_URL").unwrap_or_else(|_| SERVICE.to_string());
+        let base = omsi_cfg::flags::OMSI_PRESENCE_URL.var().map(str::to_string).unwrap_or_else(|| SERVICE.to_string());
         let base = base.trim_end_matches('/').to_string();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     #[ignore = "needs the presence service running at OMSI_PRESENCE_URL"]
     fn a_session_is_counted_while_it_runs() {
-        let base = std::env::var("OMSI_PRESENCE_URL").expect("OMSI_PRESENCE_URL");
+        let base = omsi_cfg::flags::OMSI_PRESENCE_URL.live_var().expect("OMSI_PRESENCE_URL");
         let count = || ureq::get(&format!("{base}/players")).call().unwrap().into_string().map(|t| serde_json::from_str::<serde_json::Value>(&t).unwrap()).unwrap()["players"].as_u64().unwrap();
         let before = count();
         let p = super::Presence::start().expect("presence allowed");

@@ -8,7 +8,7 @@ use omsi_script::SysVar;
 
 /// Load every plugin of every content root (`OMSI_NO_PLUGINS=1` leaves them out).
 pub(crate) fn load() -> Plugins {
-    if omsi_cfg::env::var_os("OMSI_NO_PLUGINS").is_some() {
+    if omsi_cfg::flags::OMSI_NO_PLUGINS.is_set() {
         return Plugins::default();
     }
     // (never from content another machine sent: a LAN host's mods are data only)
@@ -54,6 +54,12 @@ pub(crate) fn queue_event(events: &mut Vec<GameEvent>, name: &'static str, args:
     events.push(GameEvent { name, args });
 }
 
+/// A game value kept as `f32`, for Lua as the number it reads as (2.1, not
+/// 2.0999999046325684).
+pub(crate) fn num_f32(x: f32) -> InfoValue {
+    InfoValue::Num(x.to_string().parse().unwrap_or(x as f64))
+}
+
 /// The game menu lines a plugin may run with `omsi.command` (those that do something at
 /// once, not the ones that open a list).
 pub(crate) const PLUGIN_COMMANDS: [&str; 14] = ["refuel", "wash", "repair", "shot", "save", "load", "weather", "later", "earlier", "info", "timetable", "reset", "couple", "uncouple"];
@@ -68,8 +74,8 @@ pub(crate) fn game_info(app: &crate::App) -> Vec<(&'static str, InfoValue)> {
     v.push(("year", Num(app.clock.year as f64)));
     v.push(("view", Text(app.view.clone())));
     v.push(("paused", Bool(app.paused)));
-    v.push(("on_foot", Bool(app.on_foot.is_some())));
-    v.push(("multiplayer", Bool(app.lan.is_some())));
+    v.push(("on_foot", Bool(app.session.on_foot.is_some())));
+    v.push(("multiplayer", Bool(app.net.lan.is_some())));
     // the situation the game started from (the launcher's "continue": `laststn.osn`)
     // (relative to the OMSI folder, `/`-separated, whether the launcher passed it absolute or not)
     if let Some(s) = app.args.situation.as_ref() {
@@ -78,10 +84,10 @@ pub(crate) fn game_info(app: &crate::App) -> Vec<(&'static str, InfoValue)> {
         v.push(("situation", Text(rel.to_string_lossy().replace('\\', "/"))));
     }
     // this session's, as the personnel file counts them
-    v.push(("crashes", Num(app.career.crashes[0] as f64)));
-    v.push(("heavy_crashes", Num(app.career.crashes[3] as f64)));
-    v.push(("pedestrians_hit", Num(app.career.crashes[1] as f64)));
-    if let Some(t) = app.traffic.as_ref() {
+    v.push(("crashes", Num(app.session.career.crashes[0] as f64)));
+    v.push(("heavy_crashes", Num(app.session.career.crashes[3] as f64)));
+    v.push(("pedestrians_hit", Num(app.session.career.crashes[1] as f64)));
+    if let Some(t) = app.session.traffic.as_ref() {
         v.push(("traffic", Num(t.cars.len() as f64)));
     }
     if let Some(w) = app.world.as_ref() {
@@ -108,9 +114,9 @@ pub(crate) fn game_info(app: &crate::App) -> Vec<(&'static str, InfoValue)> {
             _ => None,
         };
         v.push(("destination", Text(shown.unwrap_or_default())));
-        v.push(("passengers", Num(app.humans.as_ref().map(|h| h.riding()).unwrap_or(0) as f64)));
+        v.push(("passengers", Num(app.session.humans.as_ref().map(|h| h.riding()).unwrap_or(0) as f64)));
     }
-    if let Some(d) = app.duty.as_ref() {
+    if let Some(d) = app.session.duty.as_ref() {
         v.push(("line", Text(d.line.trim().to_string())));
         v.push(("tour", Text(d.tour.trim().to_string())));
         if let Some(trip) = d.trips.get(d.trip_index) {
@@ -119,15 +125,46 @@ pub(crate) fn game_info(app: &crate::App) -> Vec<(&'static str, InfoValue)> {
             v.push(("terminus", Text(trip.terminus.trim().to_string())));
             v.push(("trip_name", Text(trip.name.trim().to_string())));
             v.push(("stops", Num(trip.stops.len() as f64)));
-            if let Some(s) = trip.stops.get(d.next_stop) {
-                v.push(("next_stop", Text(s.name.trim().to_string())));
-                v.push(("next_stop_number", Num(d.next_stop as f64 + 1.0)));
-                v.push(("next_stop_arrival", Num(s.arr)));
-                v.push(("next_stop_departure", Num(s.dep)));
-            }
+            // the bus reached the trip's last stop: the trip is over, though the duty moves on to
+            // the next one only a minute before it leaves
+            v.push(("trip_done", Bool(d.trip_done())));
+            let bus = app.player.as_ref().map(|p| p.vehicle.position);
+            stop_info(&mut v, &trip.stops, d.next_stop, d.at_stop(), bus);
         }
     }
     v
+}
+
+/// `omsi.info()`'s keys of the next stop and the one before it: `stops` the trip's, `next`
+/// the index of the next one, `bus` where the player's bus is.
+fn stop_info(v: &mut Vec<(&'static str, InfoValue)>, stops: &[crate::schedule::PlannedStop], next: usize, at_stop: bool, bus: Option<glam::DVec3>) {
+    use InfoValue::{Bool, Num, Text};
+    // straight-line metres from the bus, where the stop's place is known
+    let distance = |s: &crate::schedule::PlannedStop| {
+        let (bus, stop) = (bus?, s.position?);
+        Some((stop.x - bus.x).hypot(stop.y - bus.y))
+    };
+    if let Some(s) = stops.get(next) {
+        v.push(("next_stop", Text(s.name.trim().to_string())));
+        v.push(("next_stop_number", Num(next as f64 + 1.0)));
+        v.push(("next_stop_arrival", Num(s.arr)));
+        v.push(("next_stop_departure", Num(s.dep)));
+        // the map's object ID of the stop, as the timetable and the map files name it:
+        // outside tools match the stop by it, the name can occur twice
+        v.push(("next_stop_id", Num(s.object_id as f64)));
+        v.push(("at_stop", Bool(at_stop)));
+        if let Some(m) = distance(s) {
+            v.push(("next_stop_distance", Num(m)));
+        }
+    }
+    // the last stop before the next one the trip calls at (passing stations left out)
+    if let Some(s) = stops.iter().take(next).rev().find(|s| s.stops) {
+        v.push(("previous_stop", Text(s.name.trim().to_string())));
+        v.push(("previous_stop_id", Num(s.object_id as f64)));
+        if let Some(m) = distance(s) {
+            v.push(("previous_stop_distance", Num(m)));
+        }
+    }
 }
 
 impl Io<'_> {
@@ -304,6 +341,14 @@ mod tests {
         Io { vehicle: None, others: Vec::new(), dt: 0.0, message: None, info, commands: Vec::new(), keys: Vec::new(), events: Vec::new() }
     }
 
+    /// A ticket's price or a jolt's acceleration reaches Lua as the number it reads as.
+    #[test]
+    fn f32_values_reach_lua_as_they_read() {
+        assert_eq!(num_f32(2.1), InfoValue::Num(2.1));
+        assert_eq!(num_f32(-5.4), InfoValue::Num(-5.4));
+        assert_eq!(num_f32(38.0), InfoValue::Num(38.0));
+    }
+
     #[test]
     fn game_info_names_require_prefix_and_ignore_ascii_case() {
         let io = snapshot(vec![("heading", InfoValue::Num(93.0))]);
@@ -345,5 +390,35 @@ mod tests {
         let mut io = snapshot(vec![("clock", InfoValue::Num(32400.0)), ("map_path", InfoValue::Text("maps/example/global.cfg".into()))]);
         assert_eq!(io.var("openomsi_clock"), None);
         assert_eq!(io.string("openomsi_map_path"), None);
+    }
+
+    /// The next stop and the one before it, by object ID, with their distances: the stop
+    /// before skips a passing station, and a stop with no known place has no distance.
+    #[test]
+    fn info_names_the_stops_on_either_side_of_the_bus() {
+        let stop = |id: i64, name: &str, x: f64, stops: bool| crate::schedule::PlannedStop {
+            object_id: id,
+            name: name.into(),
+            arr: 0.0,
+            dep: 0.0,
+            position: (x >= 0.0).then_some(glam::DVec3::new(x, 0.0, 5.0)),
+            dir: Default::default(),
+            stops,
+        };
+        let stops = vec![stop(11, "A", 0.0, true), stop(12, "B", 100.0, false), stop(13, "C", -1.0, true)];
+        let mut v = Vec::new();
+        stop_info(&mut v, &stops, 2, true, Some(glam::DVec3::new(30.0, 40.0, 0.0)));
+        let get = |k: &str| v.iter().find(|(key, _)| *key == k).map(|(_, x)| x.clone());
+        assert_eq!(get("next_stop"), Some(InfoValue::Text("C".into())));
+        assert_eq!(get("next_stop_id"), Some(InfoValue::Num(13.0)));
+        assert_eq!(get("at_stop"), Some(InfoValue::Bool(true)));
+        assert_eq!(get("next_stop_distance"), None);
+        assert_eq!(get("previous_stop"), Some(InfoValue::Text("A".into())));
+        assert_eq!(get("previous_stop_id"), Some(InfoValue::Num(11.0)));
+        assert_eq!(get("previous_stop_distance"), Some(InfoValue::Num(50.0)));
+        // at the first stop there is none before it
+        let mut v = Vec::new();
+        stop_info(&mut v, &stops, 0, false, None);
+        assert!(v.iter().all(|(k, _)| !k.starts_with("previous_stop") && *k != "next_stop_distance"));
     }
 }

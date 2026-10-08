@@ -60,6 +60,8 @@ serde_json = "1"
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 sha2 = "0.10"
+# the LAN mods' encryption (X25519, HKDF, ChaCha20-Poly1305) and omsi-net's signatures
+ring = "0.17"
 flate2 = "1"
 ab_glyph = "0.2"
 rfd = "0.15"
@@ -87,3 +89,16 @@ strip = "debuginfo"
 # the Security audit workflow fails when Cargo.lock lists one as unused)
 [patch.crates-io]
 gpu-allocator = { git = "https://github.com/openOMSI-Project/gpu-allocator", rev = "6ad8a7eeb9c3e1dcd65656f718c593a0a1a3915d" }
+# wgpu from the org's fork (upstream v29.0.4 plus fixes): GL texture units sized from the driver,
+# the GL context released while a thread waits for the GPU, errors instead of panics on driver
+# failures, Adapter::memory_info, and GLES over ANGLE (Direct3D 11) on Windows; every crate of the
+# fork that Cargo.lock lists is patched, or the fork's and crates.io's halves would not match
+wgpu = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+wgpu-core = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+wgpu-core-deps-apple = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+wgpu-core-deps-emscripten = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+wgpu-core-deps-windows-linux-android = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+wgpu-hal = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+wgpu-types = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+wgpu-naga-bridge = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }
+naga = { git = "https://github.com/openOMSI-Project/wgpu-openomsi", rev = "49edcdfc0fdbae2ae50c18b0d75fba9c1972d04a" }

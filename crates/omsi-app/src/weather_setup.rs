@@ -448,6 +448,7 @@ pub(crate) fn weather_lighting(
         rate,
         if w.snow { 1.0 } else { 0.0 },
     );
+    lighting.roads_clear = w.snow && !w.snow_on_road;
     if let Some(custom)=CustomWeather::parse(&w.path.to_string_lossy()){
         let k=custom.brightness;
         lighting.sun_intensity*=k;
@@ -465,6 +466,7 @@ pub(crate) fn weather_lighting(
     lighting.wetness = wetness;
     // [wind] direction (deg) and speed (m/s): the snowfall drifts with it
     lighting.wind = glam::Vec3::new(w.wind.0.to_radians().sin() * w.wind.1, w.wind.0.to_radians().cos() * w.wind.1, 0.0);
+    omsi_sim::particles::set_wind(lighting.wind);
     // Omsi.exe hides the sun under an 'ovc' cloud type (the Overcast ones in clouds.cfg) and
     // draws no sun shadows below 350 m visibility
     let overcast = w.clouds.0.trim().to_ascii_lowercase().starts_with("overcast");
@@ -506,6 +508,7 @@ pub(crate) fn apply_weather(
     let (kind, rate) = precip_of(w);
     v.host.precip_type = kind as f32;
     v.host.precip_rate = rate;
+    v.host.wind = crate::rain::weather_wind(w);
     v.host.street_cond = street_condition(w, wetness);
     v.set_var("PrecipType", kind as f32);
     v.set_var("PrecipRate", rate);
@@ -519,8 +522,8 @@ pub(crate) fn apply_weather(
 pub(crate) fn debug_sound_every() -> Option<f32> {
     static EVERY: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *EVERY.get_or_init(|| {
-        omsi_cfg::env::var("OMSI_DEBUG_SOUND")
-            .ok()
+        omsi_cfg::flags::OMSI_DEBUG_SOUND
+            .var()
             .map(|v| v.parse::<f32>().ok().filter(|s| *s > 0.0).unwrap_or(5.0))
     })
 }
@@ -555,7 +558,7 @@ pub(crate) fn metar_airports(root:&std::path::Path)->Vec<(String,String)>{
     static CACHE:std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf,Vec<(String,String)>>>>=std::sync::OnceLock::new();
     let cache=CACHE.get_or_init(||std::sync::Mutex::new(std::collections::HashMap::new()));
     if let Some(v)=cache.lock().unwrap_or_else(|e|e.into_inner()).get(root).cloned(){return v}
-    let text=std::fs::read(omsi_cfg::resolve_path(root,"Weather/ICAO.txt")).map(|b|omsi_cfg::codepage::decode(&b)).unwrap_or_default();
+    let text=omsi_cfg::vfs::read(&omsi_cfg::resolve_path(root,"Weather/ICAO.txt")).map(|b|omsi_cfg::codepage::decode(&b)).unwrap_or_default();
     let mut v:Vec<(String,String)>=text.lines().filter_map(|l|l.split_once(" - ").map(|(c,n)|(c.trim().to_ascii_uppercase(),format!("{} - {}",c.trim(),n.trim()))))
         .filter(|(c,_)|c.len()==4&&c.chars().all(|x|x.is_ascii_alphabetic())).collect();
     if !v.iter().any(|a|a.0=="EDDB"){v.push(("EDDB".into(),"EDDB - Berlin Brandenburg".into()))}

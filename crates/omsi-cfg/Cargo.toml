@@ -10,4 +10,5 @@ encoding_rs.workspace = true
 thiserror.workspace = true
 log.workspace = true
 flate2.workspace = true
+ring.workspace = true
 unicode-normalization = "0.1"

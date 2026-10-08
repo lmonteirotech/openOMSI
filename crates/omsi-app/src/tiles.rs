@@ -365,7 +365,7 @@ impl MapIndex {
                 checked += 1;
                 let ours = ((acc - d) / interval + 1e-6).ceil().max(0.0) as usize;
                 agree += (ours == *first) as usize;
-                if ours != *first && omsi_cfg::env::var_os("OMSI_DEBUG_REPEATERS").is_some() {
+                if ours != *first && omsi_cfg::flags::OMSI_DEBUG_REPEATERS.is_set() {
                     log::info!("repeater {:?} on spline {spline}: the map says object {first}, the chain {ours} (chain {acc:.2} m, start {d:.2} m, interval {interval} m: the map's first at {:.2} m, ours at {:.2} m)", key, d + *first as f64 * interval - acc, d + ours as f64 * interval - acc);
                 }
             }
@@ -1124,18 +1124,18 @@ impl Streamer {
             self.world.compact_slots(renderer, scene);
             crate::release_free_memory();
         }
-        if self.last_summary.elapsed().as_secs_f32() >= 10.0 && omsi_cfg::env::var_os("OMSI_PROFILE").is_some() {
+        if self.last_summary.elapsed().as_secs_f32() >= 10.0 && omsi_cfg::flags::OMSI_PROFILE.is_set() {
             self.last_summary = std::time::Instant::now();
             let at: Vec<String> = centers.iter().map(|c| format!("({:.0}, {:.0})", c.x, c.y)).collect();
             log::info!("tile streaming at {}: {} loaded / {} unloaded so far; {}", at.join(" "), self.loaded_total, self.unloaded_total, self.world.gpu_summary(scene));
-            if omsi_cfg::env::var_os("OMSI_PROFILE").is_some() {
+            if omsi_cfg::flags::OMSI_PROFILE.is_set() {
                 log::info!("  {}", self.world.cpu_summary());
             }
         }
         let total = t0.elapsed();
         if self.initial.is_none() && total.as_secs_f64() * 1000.0 > 16.0 {
             self.slow_frames += 1;
-            if omsi_cfg::env::var_os("OMSI_PROFILE").is_some() {
+            if omsi_cfg::flags::OMSI_PROFILE.is_set() {
                 log::info!("tile streaming: {:.0} ms this frame ({uploaded} uploaded in {:.0} ms, {unloaded} unloaded in {:.0} ms, lists {:.0} ms)", total.as_secs_f64() * 1000.0, t_upload.as_secs_f64() * 1000.0, (t_unload - t_upload).as_secs_f64() * 1000.0, (total - t_unload).as_secs_f64() * 1000.0);
             }
         }
@@ -1231,6 +1231,7 @@ impl Streamer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("../../../tools/test-support/original_root.rs");
 
     #[test]
     fn first_area_stall_log_is_delayed_and_rate_limited() {
@@ -1447,9 +1448,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires OMSI_ROOT with the stock Grundorf map"]
+    #[ignore = "needs the original OMSI 2 install (OMSI_ROOT)"]
     fn grundorf_traffic_light_parents_exclude_gaussdorf() {
-        let root = PathBuf::from(std::env::var_os("OMSI_ROOT").expect("OMSI_ROOT"));
+        let root = original_root();
         let map_dir = root.join("maps/Grundorf");
         let global = omsi_map::GlobalCfg::load(&map_dir.join("global.cfg")).expect("Grundorf");
         let tiles = global.tiles.iter().map(|t| (t.index, t.x, t.y, map_dir.join(&t.file))).collect::<Vec<_>>();

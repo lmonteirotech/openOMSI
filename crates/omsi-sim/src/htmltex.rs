@@ -105,7 +105,7 @@ fn find_file(dirs: &[&Path], rel: &str) -> Option<PathBuf> {
     if let Some(parent) = dirs.first().and_then(|d| d.parent()) {
         all.push(parent.to_path_buf());
     }
-    all.iter().map(|d| omsi_cfg::resolve_path(d, rel)).find(|p| p.is_file())
+    all.iter().map(|d| omsi_cfg::resolve_path(d, rel)).find(|p| omsi_cfg::vfs::is_file(p))
 }
 
 fn attr(tag: &str, name: &str) -> Option<String> {
@@ -194,7 +194,7 @@ pub fn load_page(dirs: &[&Path], rel: &str) -> String {
         return String::new();
     };
     log::debug!("htmltexture: page {rel} -> {}", path.display());
-    let Ok(bytes) = std::fs::read(&path) else {
+    let Ok(bytes) = omsi_cfg::vfs::read(&path) else {
         log::debug!("htmltexture: {} cannot be read", path.display());
         return String::new();
     };
@@ -205,7 +205,7 @@ pub fn load_page(dirs: &[&Path], rel: &str) -> String {
     let read = |href: &str| -> Option<String> {
         let href = href.split(['?', '#']).next().unwrap_or(href);
         let text = find_file(&bases, href)
-            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|p| omsi_cfg::vfs::read(&p).ok())
             .map(|b| String::from_utf8_lossy(&b).trim_start_matches('\u{feff}').to_string());
         match &text {
             Some(t) => log::debug!("htmltexture: inlined {href} ({} bytes)", t.len()),

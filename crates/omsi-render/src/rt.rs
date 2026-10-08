@@ -136,7 +136,7 @@ pub(super) struct RayTracer {
 
 /// One reflection ray per this many pixels each way (OMSI_RT_REFL_HALF=1: per 2 x 2).
 fn refl_div() -> u32 {
-    if omsi_cfg::env::var_os("OMSI_RT_REFL_HALF").is_some() { 2 } else { 1 }
+    if omsi_cfg::flags::OMSI_RT_REFL_HALF.is_set() { 2 } else { 1 }
 }
 
 /// The traced lighting's shader: the shared ray tracing and its own.
@@ -460,7 +460,10 @@ impl Renderer {
         rt.records.clear();
         let mut chosen: Vec<(BlasKey, [f32; 12], u32, u8)> = Vec::new();
         for inst in &scene.instances {
-            if !inst.visible || inst.blob || inst.decal || inst.ground_layer {
+            // (a decal - a surface object lying on the road - is no geometry for the rays,
+            // but what such an object raises and casts a shadow from is: the Spandau depot's
+            // halls, one object with its yard, lost their shadow close up in Enhanced+, #1783)
+            if !inst.visible || inst.blob || (inst.decal && !inst.casts_shadow) || inst.ground_layer {
                 continue;
             }
             let m = &scene.meshes[inst.mesh];
@@ -615,7 +618,7 @@ impl Renderer {
         if frame % 240 == 0 {
             rt.blas.retain(|_, e| frame - e.used < 1200);
         }
-        if omsi_cfg::env::var_os("OMSI_DEBUG_RT").is_some() && frame % 30 == 1 {
+        if omsi_cfg::flags::OMSI_DEBUG_RT.is_set() && frame % 30 == 1 {
             log::info!("ray tracing: {} instances, {} geometries, {} structures ({} built this frame)", chosen.len(), rt.records.len(), rt.blas.len(), rt.to_build.len());
         }
         // --- the parameters
@@ -636,7 +639,7 @@ impl Renderer {
             ),
             _ => ([0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]),
         };
-        let debug = omsi_cfg::env::var("OMSI_DEBUG_RT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+        let debug = omsi_cfg::flags::OMSI_DEBUG_RT.parse::<f32>().unwrap_or(0.0);
         let p = Params {
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             view_proj: view_proj.to_cols_array_2d(),

@@ -197,6 +197,13 @@ fn vs_main(in: CoronaIn) -> CoronaOut {
         let inner = select(0.0, acos(clamp(in.extra.x, -1.0, 1.0)), in.extra.x >= -1.0);
         brightness = brightness * clamp((outer - ang) / max(outer - inner, 0.0001), 0.0, 1.0);
     }
+    // the light that reaches the eye through the fog: Beer-Lambert's exp(-density x
+    // distance), the same law the scene's own fog follows (`shader.wgsl`). Left out, the
+    // street lamps and signals shone at full strength to the end of the view in a fog that
+    // had hidden their poles 50 m away, a fan of dots at the horizon (#1212).
+    if (!streak) {
+        brightness = brightness * exp(-dist * max(camera.fog.w, 0.0));
+    }
     // a star grows with the light's strength; every sprite's strength stops at 1
     let star_sprite = (u32(in.extra.z + 0.5) & 8u) != 0u && !streak;
     let grow = select(1.0, brightness, star_sprite);
@@ -225,14 +232,20 @@ fn vs_main(in: CoronaIn) -> CoronaOut {
         }
     }
     // coronas keep a minimum on-screen size in the distance like the original;
-    // precipitation particles (cone < -1.5) are thin vertical streaks.
+    // precipitation particles (cone < -1.5) follow their motion relative to the eye.
     // A sprite's radius, from the light's size (its diameter) and that distance floor. The
     // 0.9 is measured against Omsi.exe: at the size the game files ask for, every glow reads
     // a shade too wide beside the original, which draws the sprite a little inside the
     // diameter its `size` names. (Streaks keep their size: they are rain, not a light.)
     let size = select(max(in.size * grow, dist * 0.002) * 0.9, in.size, streak);
     let stretch = select(vec2<f32>(1.0, 1.0), vec2<f32>(0.06, 4.0), streak);
-    let upv = select(up, vec3<f32>(0.0, 0.0, 1.0), streak);
+    var upv = up;
+    if (streak) {
+        upv = vec3<f32>(0.0, 0.0, 1.0);
+        if (length(in.dir.xyz) > 0.5) { upv = normalize(in.dir.xyz); }
+        let across = cross(upv, view_dir);
+        if (length(across) > 0.001) { right = normalize(across); }
+    }
     // the spot moved towards the viewer by its z offset, so that a lamp inside its housing
     // shows (without one: half its size, at most half a metre)
     let pull = select(min(size * 0.5, 0.5), in.extra.y, in.extra.y >= 0.0);

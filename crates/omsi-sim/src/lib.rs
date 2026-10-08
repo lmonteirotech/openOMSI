@@ -1,6 +1,7 @@
 //! Simulation runtime.
 
 pub mod ai_motion;
+pub mod ai_traffic;
 pub mod anim;
 pub mod clock;
 pub mod collision;
@@ -14,12 +15,14 @@ pub mod human;
 pub mod human_omsi;
 pub mod input;
 pub mod particles;
+pub mod people;
 pub mod physics;
 pub mod rigid;
 pub mod scenery;
 pub mod scripttex;
 pub mod startup;
 pub mod texttex;
+pub mod timetable_run;
 pub mod traffic;
 pub mod vehicle;
 pub mod vehicle_api;

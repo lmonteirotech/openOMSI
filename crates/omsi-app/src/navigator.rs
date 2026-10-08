@@ -667,7 +667,7 @@ impl Navigator {
         };
         // (from the depot to the first stop may be a long way; back onto the route is not)
         let way = way_back(net, f.bus, f.heading, &r.lanes[lo..hi], if r.joined { 6000.0 } else { 30_000.0 });
-        if way.is_none() && omsi_cfg::env::var_os("OMSI_DEBUG_NAV").is_some() {
+        if way.is_none() && omsi_cfg::flags::OMSI_DEBUG_NAV.is_set() {
             let info: Vec<_> = r.lanes[lo..hi].iter().map(|&l| (l, net.lanes[l].kind, net.lanes[l].name.clone(), net.lanes.iter().filter(|x| x.next.contains(&l)).count(), net.lanes[l].start())).collect();
             log::info!("navigator: off the route for {:.1} s and no way back found; targets {info:?}", r.off_for);
         }
@@ -905,7 +905,7 @@ impl Navigator {
             }
         }
         // stops whose tiles are not loaded: their place from the map
-        if omsi_cfg::env::var_os("OMSI_DEBUG_NAV").is_some() && self.time < 0.15 {
+        if omsi_cfg::flags::OMSI_DEBUG_NAV.is_set() && self.time < 0.15 {
             log::info!("navigator: stops {:?}", f.stops.iter().map(|s| (s.name.clone(), s.object_id, s.position != DVec3::ZERO, self.stop_pos.contains_key(&s.object_id))).collect::<Vec<_>>());
         }
         let f2;
@@ -918,7 +918,7 @@ impl Navigator {
         self.follow(f);
         self.bus_at = f.bus;
         self.stop_spots = f.stops.iter().take(3).map(|st| (st.position, st.name.clone(), f.heading, st.object_id)).collect();
-        if omsi_cfg::env::var_os("OMSI_DEBUG_NAV").is_some() && (self.time % 1.0) < f.dt {
+        if omsi_cfg::flags::OMSI_DEBUG_NAV.is_set() && (self.time % 1.0) < f.dt {
             log::info!("navigator: route {} lanes (complete {}, provisional {}, at {}, on it {}, off for {:.1} s), {} stops ahead, next {:?}, key {:?}", self.route.lanes.len(), self.route.complete, self.route.provisional, self.route.progress, self.route.on_route, self.route.off_for, f.stops.len(), f.stops.first().map(|s| (s.name.clone(), s.position.x.round(), s.position.y.round())), self.route.key);
         }
         self.update_congestion(f);
@@ -1034,7 +1034,7 @@ impl Navigator {
                 let mut p = Painter::new();
                 let t0 = std::time::Instant::now();
                 build_roads(&mut p, net, anchor);
-                if omsi_cfg::env::var_os("OMSI_DEBUG_NAV").is_some() {
+                if omsi_cfg::flags::OMSI_DEBUG_NAV.is_set() {
                     log::info!("navigator: roads around ({:.0}, {:.0}) in {:.1} ms: {} vertices", anchor.x, anchor.y, t0.elapsed().as_secs_f64() * 1000.0, p.verts.len());
                 }
                 road_verts = Some(p.verts);
@@ -1680,7 +1680,7 @@ fn lanes_near(net: &Network, c: DVec2, radius: f64) -> Vec<usize> {
 /// `OMSI_NAV_PROBE=x,y[,r]`: the lanes of the map's network that start or end within r
 /// metres (25) of a point - how they link, to see why a route cannot reach a place.
 fn probe_lanes(net: &Network) {
-    let Ok(v) = omsi_cfg::env::var("OMSI_NAV_PROBE") else { return };
+    let Some(v) = omsi_cfg::flags::OMSI_NAV_PROBE.var() else { return };
     let f: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
     if f.len() < 2 {
         return;
@@ -1906,7 +1906,7 @@ fn build_streets(net: &Network, signs: &[(DVec3, f64, String)]) -> Streets {
         }
     }
     let straight = |l: &omsi_sim::traffic::Lane| l.kind == LaneKind::Street && omsi_sim::traffic::wrap_deg(l.end_heading() - l.start_heading()).abs() < 30.0;
-    let debug = omsi_cfg::env::var_os("OMSI_DEBUG_NAV").is_some();
+    let debug = omsi_cfg::flags::OMSI_DEBUG_NAV.is_set();
     let mut hist = [0u32; 12];
     let mut seeds: Vec<(usize, u32)> = Vec::new();
     for (pos, rot, name) in signs {
@@ -2043,7 +2043,7 @@ pub(crate) fn way_back(net: &Network, bus: DVec3, heading: f64, ahead: &[usize],
         .collect();
     let pick = |max_d: f64, max_a: f64| cands.iter().filter(|c| c.1 < max_d && c.2 < max_a).min_by(|a, b| (a.1 + a.2 * 0.1).total_cmp(&(b.1 + b.2 * 0.1))).map(|c| c.0);
     let start = pick(14.0, 70.0).or_else(|| pick(80.0, 100.0)).or_else(|| pick(80.0, 181.0));
-    if omsi_cfg::env::var_os("OMSI_DEBUG_NAV").is_some() {
+    if omsi_cfg::flags::OMSI_DEBUG_NAV.is_set() {
         log::info!("navigator: way search from {:?} ({} street lanes within 90 m) to {} route lanes", start, cands.len(), ahead.len());
     }
     let start = start?;
@@ -2209,7 +2209,7 @@ impl Navigator {
             self.city.follow = true;
             if self.city.mpp <= 0.0 {
                 // For repeatable offscreen GPS comparisons at a chosen zoom.
-                self.city.mpp = omsi_cfg::env::var("OMSI_NAV_MAP_MPP").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && (0.25..=20.0).contains(v)).unwrap_or(2.5);
+                self.city.mpp = omsi_cfg::flags::OMSI_NAV_MAP_MPP.parse::<f64>().filter(|v| v.is_finite() && (0.25..=20.0).contains(v)).unwrap_or(2.5);
             }
         }
         self.city.drag = None;

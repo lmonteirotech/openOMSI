@@ -82,6 +82,32 @@ jobs:
           $arch = if ("${{ matrix.arch }}" -eq "arm64") { "arm64" } else { "x64" }
           Copy-Item "dxc/x/bin/$arch/dxcompiler.dll", "dxc/x/bin/$arch/dxil.dll" dist/windows/
           Get-ChildItem dist/windows
+      # Google's ANGLE (OpenGL ES over Direct3D 11) for the "ANGLE (DirectX 11)" graphics API:
+      # libEGL.dll and libGLESv2.dll built from ANGLE's own source by
+      # openOMSI-Project/angle-openomsi, taken by its release tag and checked against the
+      # SHA-256 recorded here (and the DLLs against the release's own SHA256SUMS). x64 only:
+      # there is no ARM64 build, and the game skips the option without the DLLs.
+      - name: ANGLE (DirectX 11)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANGLE_TAG: angle-8091-36b74e4dd4
+          ANGLE_SHA256: 1c0086155a17445110dd97400018ca6e72ea245ef178989b457720ee1fba3af5
+        run: |
+          gh release download $env:ANGLE_TAG -R openOMSI-Project/angle-openomsi --pattern "*-windows-x64.zip" -D angle
+          $zip = Get-ChildItem angle/*.zip | Select-Object -First 1
+          $have = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($have -ne $env:ANGLE_SHA256) { throw "ANGLE zip: SHA-256 $have, expected $env:ANGLE_SHA256" }
+          Expand-Archive $zip.FullName -DestinationPath angle/x
+          $dir = Get-ChildItem angle/x -Directory | Select-Object -First 1
+          foreach ($line in Get-Content (Join-Path $dir.FullName "SHA256SUMS")) {
+            $want, $name = $line -split '\s+\*?', 2
+            $got = (Get-FileHash (Join-Path $dir.FullName $name) -Algorithm SHA256).Hash.ToLower()
+            if ($got -ne $want.ToLower()) { throw "ANGLE ${name}: SHA-256 $got, expected $want" }
+          }
+          Copy-Item (Join-Path $dir.FullName "libEGL.dll"), (Join-Path $dir.FullName "libGLESv2.dll"), (Join-Path $dir.FullName "LICENSE-ANGLE.txt") dist/windows/
+          Get-ChildItem dist/windows
       # The Visual C++ runtime beside the program (Microsoft allows it to be shipped
       # app-locally): without it a PC lacking the Redistributable refused to start the game
       # ("VCRUNTIME140_1.dll was not found"). It cannot be linked in instead - the OpenXR
@@ -261,6 +287,9 @@ jobs:
         run: |
           mkdir -p out
           cp "dist/android/openOMSI-$OPENOMSI_VERSION.apk" "out/openOMSI-$OPENOMSI_VERSION-android-arm64.apk"
+          # (and under a name of its own: releases/latest/download/openOMSI-android.apk is
+          # always the newest APK - for a phone whose installed build cannot update itself)
+          cp "dist/android/openOMSI-$OPENOMSI_VERSION.apk" "out/openOMSI-android.apk"
       - uses: actions/upload-artifact@v7
         with:
           # (a release keeps its files; a pull request's test builds are fetched within days)

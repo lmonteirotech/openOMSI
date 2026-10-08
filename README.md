@@ -103,7 +103,11 @@ to.
   a key you change there takes effect at once.
 * **Anything else:** when the game ends on an error, the launcher shows it with *Copy report*
   and *Report on GitHub*. The logs are in `~/.openomsi` (Windows: `C:\Users\<you>\.openomsi`),
-  `game.log` for the last game.
+  `game.log` for the last game. Setup → *Export diagnostics* (or `openomsi --export-diagnostics
+  <file.zip>`) saves a support package for an issue on this computer: the program, the system,
+  the graphics card, driver and settings, the controllers and the last game's map and bus, but
+  no folder paths, names, chat, LAN codes or addresses, and of the logs only which events
+  happened. Nothing is sent; look inside before you attach it.
 
 ## Goals
 

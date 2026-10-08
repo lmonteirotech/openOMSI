@@ -32,6 +32,8 @@ pub struct VehicleHost {
     pub mouse: (f32, f32),
     pub precip_type: f32,
     pub precip_rate: f32,
+    /// World-space weather air velocity (m/s), used by water on the glass.
+    pub wind: glam::Vec3,
     /// `StreetCond`: how the road under the vehicle is - 0 dry, 1 wet, 2 covered in snow,
     /// and everything in between. The engine feeds it like `Dirt_Norm` (no varlist declares
     /// it); the stock sound configurations fade `Sounds\WetLane_1.wav` in over 0 … 1 and
@@ -214,6 +216,7 @@ impl VehicleHost {
             clock: self.clock.clone(),
             precip_type: self.precip_type,
             precip_rate: self.precip_rate,
+            wind: self.wind,
             street_cond: self.street_cond,
             temperature: self.temperature,
             abs_humidity: self.abs_humidity,
@@ -965,6 +968,5 @@ mod tests {
 }
 
 fn debug_text() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| omsi_cfg::env::var_os("OMSI_DEBUG_TEXT").is_some())
+    omsi_cfg::flags::OMSI_DEBUG_TEXT.is_set()
 }
