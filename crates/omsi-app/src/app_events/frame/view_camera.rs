@@ -88,6 +88,20 @@ impl App {
                 // the field of view setting and the zoom (for the camera left in a
                 // switch as well as for the one taken)
                 let fov_setting = self.settings.fov;
+                // The outside view (F3): its own field of view setting, else the general
+                // one, else 60 degrees held to what 16:9 shows sideways (see
+                // `auto_outside_fov`) - the window's shape is read every frame, so a
+                // monitor of another shape or a resized window is followed at once
+                let outside_fov = (self.view == "outside").then(|| {
+                    if self.settings.outside_fov >= 20.0 {
+                        self.settings.outside_fov.min(120.0)
+                    } else if fov_setting >= 20.0 {
+                        fov_setting.min(120.0)
+                    } else {
+                        let aspect = self.gfx.surface.as_ref().map(|s| s.config.width as f32 / s.config.height.max(1) as f32).unwrap_or(16.0 / 9.0);
+                        crate::camera_util::auto_outside_fov(aspect)
+                    }
+                });
                 // Eased Space return (F1): look + zoom glide home on the
                 // same ease-out as the viewpoint switch instead of
                 // teleporting — ahead of the zoom read below, so the
@@ -115,7 +129,9 @@ impl App {
                         c.roll += r[2];
                     }
                     // Settings → Field of view (0: the bus's own cameras)
-                    if fov_setting >= 20.0 {
+                    if let Some(f) = outside_fov {
+                        c.fov_deg = f;
+                    } else if fov_setting >= 20.0 {
                         c.fov_deg = fov_setting.min(120.0);
                     }
                     if let Some(z) = zoom {
