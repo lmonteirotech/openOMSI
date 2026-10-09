@@ -2319,7 +2319,6 @@ fn sync_live(app: &mut App) {
     crate::startup::SOUND_SCENERY.store(s.vol_scenery.to_bits(), std::sync::atomic::Ordering::Relaxed);
     omsi_audio::DOPPLER.store(s.doppler, std::sync::atomic::Ordering::Relaxed);
     omsi_audio::MUFFLE_OUTSIDE.store(s.muffle_outside, std::sync::atomic::Ordering::Relaxed);
-    if let Some(n) = app.navigator.as_mut() {
     if let Some(n) = app.menus.navigator.as_mut() {
         n.arrows = s.nav_arrows;
     }
