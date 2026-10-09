@@ -40,4 +40,3 @@ fn 366 crates/omsi-script::aachen_ibox_route_pad crates/omsi-script/src/compat.r
 fn 441 crates/omsi-sim::advance crates/omsi-sim/src/human.rs
 fn 437 crates/omsi-sim::bones crates/omsi-sim/src/human.rs
 fn 349 crates/omsi-sim::callback crates/omsi-sim/src/host.rs
-fn 496 crates/omsi-sim::step_slice crates/omsi-sim/src/rigid.rs
