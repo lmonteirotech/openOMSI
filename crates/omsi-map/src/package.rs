@@ -31,6 +31,9 @@ pub const FILL_CLASSES: usize = 7;
 pub const LINE_RIVER: u8 = 0;
 pub const LINE_RAIL: u8 = 1;
 pub const LINE_BORDER: u8 = 2;
+/// A contour line of the terrain (`width` is its height in metres) and an index contour (every fifth: drawn heavier).
+pub const LINE_CONTOUR: u8 = 5;
+pub const LINE_CONTOUR_INDEX: u8 = 6;
 
 /// A colour as the manifest writes it, `#rrggbb`.
 pub type Rgb = [u8; 3];
@@ -146,6 +149,29 @@ pub struct Layers {
     /// Rivers, rail and borders (the streets and contours of a package are not here: the
     /// readers that need them read their own classes).
     pub lines: Vec<Line>,
+    /// The terrain's contour lines (`LINE_CONTOUR`, `LINE_CONTOUR_INDEX`; `width` is the height in metres).
+    pub contours: Vec<Line>,
+}
+
+/// An icon on the map: where (world metres), the picture's path under the package folder and how wide it is
+/// drawn (pixels at interface size 1). The file's last column, a name, is for people reading it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Marker {
+    pub at: (f64, f64),
+    pub icon: String,
+    pub width_px: f32,
+    pub name: String,
+}
+
+/// A region of the map (a municipality): its outline, and the box its name fits in (`box_w` 0:
+/// no room for a readable name, so none is drawn).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Region {
+    pub name: String,
+    pub label: (f64, f64),
+    pub box_w: f64,
+    pub box_h: f64,
+    pub outline: Vec<(f64, f64)>,
 }
 
 /// The package of a map (see the module).
@@ -161,6 +187,10 @@ pub struct Package {
     chunk: f64,
     index: Vec<Entry>,
     data: Vec<u8>,
+    /// The package folder (`markers.cfg`, `regions.cfg` and `icons/` lie in it).
+    dir: std::path::PathBuf,
+    /// Where real north lies, in degrees clockwise from the map's own up (0 when the manifest says nothing).
+    pub north: f32,
 }
 
 /// Bounds-checked reading: any short or odd file ends in `None`, never a panic.
@@ -218,6 +248,7 @@ impl Package {
         let text = String::from_utf8_lossy(&manifest).into_owned();
         let (mut format, mut grid) = (0u32, 0.0f64);
         let (mut name, mut credit) = (String::new(), String::new());
+        let mut north = 0.0f32;
         let (mut dark, mut light) = (Palette::dark(), Palette::light());
         for line in text.lines() {
             let line = line.trim();
@@ -233,6 +264,13 @@ impl Package {
                 "grid" => grid = v.parse().unwrap_or(0.0),
                 "name" => name = v.to_string(),
                 "credit" => credit = v.to_string(),
+                "north" => {
+                    north = v
+                        .parse()
+                        .ok()
+                        .filter(|n: &f32| n.is_finite())
+                        .unwrap_or(0.0)
+                }
                 _ => {
                     // a colour: `water = #..` for the dark map, `light_water = #..` for the light one
                     if let Some(c) = parse_color(v) {
@@ -252,7 +290,11 @@ impl Package {
             return None;
         }
         let data = omsi_cfg::vfs::read(&dir.join("surface.oms")).ok()?;
-        let p = Self::parse(data, name, credit, dark, light, grid);
+        let mut p = Self::parse(data, name, credit, dark, light, grid);
+        if let Some(p) = p.as_mut() {
+            p.dir = dir.clone();
+            p.north = north;
+        }
         if p.is_none() {
             log::warn!(
                 "map package: {}/surface.oms is not a valid version {VERSION} file: not used",
@@ -313,12 +355,118 @@ impl Package {
             chunk,
             index,
             data,
+            dir: Default::default(),
+            north: 0.0,
         })
+    }
+
+    /// `markers.cfg`: `marker = icon | width px | x | y | name`, x and y in metres of the author's grid. A line that
+    /// cannot be read is left out.
+    pub fn markers(&self) -> Vec<Marker> {
+        let Ok(bytes) = omsi_cfg::vfs::read(&self.dir.join("markers.cfg")) else {
+            return Vec::new();
+        };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            if line.starts_with('#') || !k.trim().eq_ignore_ascii_case("marker") {
+                continue;
+            }
+            let f: Vec<&str> = v.split('|').map(str::trim).collect();
+            if f.len() < 4 || f[0].contains("..") {
+                continue;
+            }
+            let (Ok(width), Ok(x), Ok(y)) = (
+                f[1].parse::<f32>(),
+                f[2].parse::<f64>(),
+                f[3].parse::<f64>(),
+            ) else {
+                continue;
+            };
+            if !(width > 0.0 && width < 512.0) || !x.is_finite() || !y.is_finite() {
+                continue;
+            }
+            out.push(Marker {
+                at: self.author_to_world(x, y),
+                icon: f[0].to_string(),
+                width_px: width,
+                name: f.get(4).copied().unwrap_or("").to_string(),
+            });
+        }
+        out
+    }
+
+    /// A picture of the package folder (an icon), when it lies under it.
+    pub fn picture(&self, rel: &str) -> Option<Vec<u8>> {
+        if rel.contains("..") {
+            return None;
+        }
+        omsi_cfg::vfs::read(&self.dir.join(rel)).ok()
+    }
+
+    /// `regions.cfg`: `region = name | label x | label y | box width | box height | x,y x,y ...`, metres of the
+    /// author's grid. A line that cannot be read is left out.
+    pub fn regions(&self) -> Vec<Region> {
+        let Ok(bytes) = omsi_cfg::vfs::read(&self.dir.join("regions.cfg")) else {
+            return Vec::new();
+        };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            if line.starts_with('#') || !k.trim().eq_ignore_ascii_case("region") {
+                continue;
+            }
+            let f: Vec<&str> = v.split('|').map(str::trim).collect();
+            if f.len() < 6 || f[0].is_empty() {
+                continue;
+            }
+            let num = |i: usize| f[i].parse::<f64>().ok().filter(|v| v.is_finite());
+            let (Some(x), Some(y), Some(w), Some(h)) = (num(1), num(2), num(3), num(4)) else {
+                continue;
+            };
+            let outline: Vec<(f64, f64)> = f[5]
+                .split_whitespace()
+                .filter_map(|p| {
+                    let (a, b) = p.split_once(',')?;
+                    Some(self.author_to_world(a.parse().ok()?, b.parse().ok()?))
+                })
+                .collect();
+            if outline.len() < 3 {
+                continue;
+            }
+            out.push(Region {
+                name: f[0].to_string(),
+                label: self.author_to_world(x, y),
+                box_w: w.max(0.0),
+                box_h: h.max(0.0),
+                outline,
+            });
+        }
+        out
     }
 
     /// How many chunks the file has.
     pub fn chunks(&self) -> usize {
         self.index.len()
+    }
+
+    /// A place of the author's grid (metres, as `markers.cfg` and `regions.cfg` write them) as world metres.
+    pub fn author_to_world(&self, ax: f64, ay: f64) -> (f64, f64) {
+        let (tx, ty) = ((ax / self.grid).floor(), (ay / self.grid).floor());
+        crate::tile_local_to_world(
+            tx as i32,
+            ty as i32,
+            ax - tx * self.grid,
+            ay - ty * self.grid,
+        )
     }
 
     /// A position of the file (metres from its origin) as world metres.
@@ -394,8 +542,11 @@ impl Package {
             if n.checked_mul(8)? > r.left() {
                 return None;
             }
-            if !matches!(class, LINE_RIVER | LINE_RAIL | LINE_BORDER) {
-                // a street to look up or a contour: not for this reader
+            if !matches!(
+                class,
+                LINE_RIVER | LINE_RAIL | LINE_BORDER | LINE_CONTOUR | LINE_CONTOUR_INDEX
+            ) {
+                // a street to look up: not for this reader
                 r.take(n * 8)?;
                 continue;
             }
@@ -403,11 +554,16 @@ impl Package {
             for _ in 0..n {
                 points.push(self.to_world(r.f32()?, r.f32()?));
             }
-            out.lines.push(Line {
+            let line = Line {
                 class,
                 width,
                 points,
-            });
+            };
+            if class == LINE_CONTOUR || class == LINE_CONTOUR_INDEX {
+                out.contours.push(line);
+            } else {
+                out.lines.push(line);
+            }
         }
         Some(())
     }

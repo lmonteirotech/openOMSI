@@ -128,6 +128,20 @@ pub fn export(map: &str, global: &Path, date: &str, trip: &str, tolerance: f32) 
     })
 }
 
+/// Base64 (standard alphabet, padded) of some bytes: the package's icons travel in the same JSON as the map.
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(A[(n >> 18) as usize & 63] as char);
+        out.push(A[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { A[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { A[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 /// How far past the roads' 1 - 99 % box the package's surface is read: the page can be dragged
 /// to the far corners, and a river or a shore runs on beyond the last road.
 const PACKAGE_MARGIN: f64 = 2500.0;
@@ -144,6 +158,7 @@ fn package_view(global: &Path, origin: DVec2, lo: DVec2, hi: DVec2, tolerance: f
     let m = DVec2::splat(PACKAGE_MARGIN);
     let (a, b) = (lo - m, hi + m);
     let layers = pkg.layers(Some(((a.x, a.y), (b.x, b.y))));
+    let within = |q: (f64, f64)| q.0 >= a.x && q.0 <= b.x && q.1 >= a.y && q.1 <= b.y;
     let r1 = |v: f64| (v * 10.0).round() / 10.0;
     let at = |q: (f64, f64)| [r1(q.0 - origin.x), r1(q.1 - origin.y)];
     let fills: Vec<Vec<f64>> = layers.fills.iter().map(|list| list.iter().flat_map(|t| t.iter().flat_map(|q| at(*q))).collect()).collect();
@@ -156,6 +171,39 @@ fn package_view(global: &Path, origin: DVec2, lo: DVec2, hi: DVec2, tolerance: f
             (p.len() >= 4).then(|| json!({ "c": l.class, "w": l.width, "p": p }))
         })
         .collect();
+    let contours: Vec<serde_json::Value> = layers
+        .contours
+        .iter()
+        .filter_map(|l| {
+            let v: Vec<Vec3> = l.points.iter().map(|q| Vec3::new((q.0 - origin.x) as f32, (q.1 - origin.y) as f32, 0.0)).collect();
+            let p: Vec<f64> = simplify(&v, tolerance).iter().flat_map(|q| [r1(q.x as f64), r1(q.y as f64)]).collect();
+            (p.len() >= 4).then(|| json!({ "i": l.class == package::LINE_CONTOUR_INDEX, "h": l.width, "p": p }))
+        })
+        .collect();
+    // the icons, once each, as pictures the page can draw without asking for them
+    let mut icons: Vec<String> = Vec::new();
+    let mut icon_data: Vec<String> = Vec::new();
+    let mut markers: Vec<serde_json::Value> = Vec::new();
+    for m in pkg.markers() {
+        if !within(m.at) {
+            continue;
+        }
+        let k = match icons.iter().position(|n| n.eq_ignore_ascii_case(&m.icon)) {
+            Some(k) => k,
+            None => {
+                let Some(bytes) = pkg.picture(&m.icon).filter(|b| b.len() < 400_000) else { continue };
+                icons.push(m.icon.clone());
+                icon_data.push(format!("data:image/png;base64,{}", base64(&bytes)));
+                icons.len() - 1
+            }
+        };
+        markers.push(json!({ "at": at(m.at), "icon": k, "w": m.width_px, "name": m.name }));
+    }
+    let regions: Vec<serde_json::Value> = pkg
+        .regions()
+        .iter()
+        .map(|r| json!({ "name": r.name, "at": at(r.label), "bw": r.box_w, "bh": r.box_h, "poly": r.outline.iter().flat_map(|q| at(*q)).collect::<Vec<f64>>() }))
+        .collect();
     let hex = |c: package::Rgb| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
     let d = pkg.dark;
     log::info!("map package \"{}\": {} chunks, {} triangles, {} lines near the roads", pkg.name, pkg.chunks(), fills.iter().map(|f| f.len() / 6).sum::<usize>(), lines.len());
@@ -164,6 +212,11 @@ fn package_view(global: &Path, origin: DVec2, lo: DVec2, hi: DVec2, tolerance: f
         "credit": pkg.credit,
         "fills": fills,
         "lines": lines,
+        "contours": contours,
+        "markers": markers,
+        "icons": icon_data,
+        "regions": regions,
+        "north": pkg.north,
         "colors": {
             "land": hex(d.land), "water": hex(d.water), "river": hex(d.river), "green": hex(d.green), "grass": hex(d.grass),
             "forest": hex(d.forest), "sport": hex(d.sport), "farm": hex(d.farm), "built": hex(d.built),
@@ -353,6 +406,15 @@ mod package_tests {
         let lines = v["lines"].as_array().unwrap().len();
         println!("package \"{}\": {triangles} triangles, {lines} lines, {} bytes of JSON", v["name"], v.to_string().len());
         assert!(triangles > 0);
+    }
+
+    #[test]
+    fn base64_is_the_standard_one() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
     }
 
     #[test]

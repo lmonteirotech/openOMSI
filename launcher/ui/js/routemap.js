@@ -59,13 +59,79 @@ function surfacePaths(pkg) {
     if (!path) continue;
     for (let i = 0; i + 1 < l.p.length; i += 2) (i ? path.lineTo : path.moveTo).call(path, l.p[i], l.p[i + 1]);
   }
-  return (pkg.paths = { fills, lines });
+  // the terrain's contour lines: the ordinary ones fainter than the index ones (every fifth)
+  const contours = { thin: new Path2D(), index: new Path2D() };
+  for (const l of pkg.contours || []) {
+    const path = l.i ? contours.index : contours.thin;
+    for (let i = 0; i + 1 < l.p.length; i += 2) (i ? path.lineTo : path.moveTo).call(path, l.p[i], l.p[i + 1]);
+  }
+  const images = (pkg.icons || []).map((src) => Object.assign(new Image(), { src }));
+  return (pkg.paths = { fills, lines, contours, images });
+}
+
+const CONTOUR = '#be9664';
+
+/** The regions' names as big, faint watermarks, each as large as its box allows (a box of width 0 has no room: no name). */
+function drawRegions(g, pkg, X, Y, v) {
+  g.save();
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillStyle = '#ffffff';
+  g.globalAlpha = 0.16;
+  for (const r of pkg.regions || []) {
+    if (!(r.bw > 0)) continue;
+    g.font = '700 100px Inter, sans-serif';
+    const px = Math.min((r.bw / v.mpp / Math.max(g.measureText(r.name).width, 1)) * 100, (r.bh / v.mpp) * 0.9);
+    if (px < 9) continue;
+    g.font = `700 ${px}px Inter, sans-serif`;
+    g.fillText(r.name, X(r.at[0]), Y(r.at[1]));
+  }
+  g.restore();
+}
+
+/** The package's icons (stations and stops), upright at their place; the width is in pixels. */
+function drawMarkers(g, pkg, X, Y) {
+  const { images } = surfacePaths(pkg);
+  for (const m of pkg.markers || []) {
+    const img = images[m.icon];
+    if (!img || !img.complete || !img.naturalWidth) continue;
+    const w = m.w;
+    const h = (w * img.naturalHeight) / img.naturalWidth;
+    g.drawImage(img, X(m.at[0]) - w / 2, Y(m.at[1]) - h / 2, w, h);
+  }
+}
+
+/** Where real north lies, as a small compass in the corner: the needle turned `north` degrees clockwise from the map's own up. */
+function drawCompass(g, north) {
+  const [x, y, r] = [28, 28, 14];
+  g.save();
+  g.translate(x, y);
+  g.fillStyle = 'rgba(14,14,14,0.8)';
+  g.beginPath();
+  g.arc(0, 0, r + 6, 0, Math.PI * 2);
+  g.fill();
+  g.rotate((north * Math.PI) / 180);
+  g.fillStyle = '#d63028';
+  g.beginPath();
+  g.moveTo(0, -r);
+  g.lineTo(5, 3);
+  g.lineTo(-5, 3);
+  g.closePath();
+  g.fill();
+  g.fillStyle = '#9a9a9a';
+  g.beginPath();
+  g.moveTo(0, r);
+  g.lineTo(5, -1);
+  g.lineTo(-5, -1);
+  g.closePath();
+  g.fill();
+  g.restore();
 }
 
 /** The surface under the roads: ground, areas, then rivers, rail and borders. */
-function drawSurface(g, pkg, v, W, H) {
+function drawSurface(g, pkg, v, W, H, relief) {
   const c = pkg.colors;
-  const { fills, lines } = surfacePaths(pkg);
+  const { fills, lines, contours } = surfacePaths(pkg);
   g.fillStyle = c.land;
   g.fillRect(0, 0, W, H);
   g.save();
@@ -84,6 +150,16 @@ function drawSurface(g, pkg, v, W, H) {
     g.lineWidth = px * v.mpp;
     g.stroke(path);
   };
+  if (relief) {
+    // far away only the index lines (every fifth) are drawn: all of them would be a net over the whole map
+    if (v.mpp < 7) {
+      g.globalAlpha = 0.45;
+      stroke(contours.thin, CONTOUR, 0.9);
+    }
+    g.globalAlpha = 0.85;
+    stroke(contours.index, CONTOUR, 1.6);
+    g.globalAlpha = 1;
+  }
   stroke(lines.river, c.river, 6);
   stroke(lines.stream, c.river, 2.4);
   stroke(lines.rail, c.rail_edge, 3.4);
@@ -105,6 +181,8 @@ export function RouteMap({ map, date, trip, stops = [], entry = -1, onEntry, hei
   const [data, setData] = useState(null);
   const view = useRef(null);
   const [hover, setHover] = useState(-1);
+  // the terrain's contour lines, when the map's package has them (off at first: the roads are the point)
+  const [relief, setRelief] = useState(false);
 
   useEffect(() => {
     if (!map) return;
@@ -151,7 +229,10 @@ export function RouteMap({ map, date, trip, stops = [], entry = -1, onEntry, hei
       g.beginPath();
       for (let i = 0; i < p.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, X(p[i]), Y(p[i + 1]));
     };
-    if (d.package) drawSurface(g, d.package, v, W, H);
+    if (d.package) {
+      drawSurface(g, d.package, v, W, H, relief);
+      drawRegions(g, d.package, X, Y, v);
+    }
     g.lineCap = g.lineJoin = 'round';
     const [casing, road, main, red] = d.colors;
     for (let pass = 0; pass < 2; pass++) {
@@ -167,6 +248,10 @@ export function RouteMap({ map, date, trip, stops = [], entry = -1, onEntry, hei
     for (const p of d.route) {
       line(p);
       g.stroke();
+    }
+    if (d.package) {
+      drawMarkers(g, d.package, X, Y);
+      drawCompass(g, d.package.north || 0);
     }
     // stops, with their times and names
     g.font = '600 11.5px Inter, sans-serif';
@@ -299,6 +384,7 @@ export function RouteMap({ map, date, trip, stops = [], entry = -1, onEntry, hei
     <canvas ref=${cv}></canvas>
     ${!data && html`<div class="state"><${Spinner} /> ${t('Reading the map…')}</div>`}
     ${data?.error && html`<div class="state">${data.error}</div>`}
+    ${data?.package?.contours?.length > 0 && html`<button class=${'tool' + (relief ? ' on' : '')} onPointerDown=${(e) => e.stopPropagation()} onClick=${() => setRelief(!relief)}>${t('Relief')}</button>`}
     ${data?.package?.credit && html`<div class="credit">${data.package.credit}</div>`}
     ${data && !data.error && html`<div class="legend">${t('{roads} roads | {stops} stops | {entries} entry points', { roads: data.roads.length, stops: data.stops.length, entries: data.entries.length })}</div>`}
   </div>`;
