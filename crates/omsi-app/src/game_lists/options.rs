@@ -353,6 +353,8 @@ pub(super) fn toggle_now(app: &App, id: &str) -> Option<bool> {
     Some(match id {
         "navigator" => if app.vr_active() { app.vr_nav_profile().enabled } else { app.menus.navigator.as_ref().is_some_and(|n| n.enabled) },
         "nav_ai" => app.menus.navigator.as_ref().map_or(s.nav_ai, |n| n.show_ai),
+        "nav_surface" => app.menus.navigator.as_ref().map_or(s.nav_surface, |n| n.show_surface),
+        "nav_light" => app.menus.navigator.as_ref().map_or(s.nav_light, |n| n.light),
         "shadows" => s.shadows,
         "head" => s.head_movement,
         "cam_smooth" => s.driverview_smooth,
@@ -448,6 +450,20 @@ pub(super) fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static 
             }
             app.settings.nav_ai = on;
             Some(("nav_ai", bit))
+        }
+        "nav_surface" => {
+            if let Some(n) = app.menus.navigator.as_mut() {
+                n.show_surface = on;
+            }
+            app.settings.nav_surface = on;
+            Some(("nav_surface", bit))
+        }
+        "nav_light" => {
+            if let Some(n) = app.menus.navigator.as_mut() {
+                n.light = on;
+            }
+            app.settings.nav_light = on;
+            Some(("nav_light", bit))
         }
         "shadows" => {
             app.settings.shadows = on;

@@ -319,6 +319,8 @@ impl Offscreen<'_> {
                 let mut nav = navigator::Navigator::new(true, settings.ui_opacity, &settings.navigator_corner);
                 nav.schedule = omsi_cfg::flags::OMSI_NAV_SCHEDULE.is_set();
                 nav.show_ai = settings.nav_ai;
+                nav.show_surface = settings.nav_surface;
+                nav.light = settings.nav_light;
                 if omsi_cfg::flags::OMSI_NAV_MAP.is_set() {
                     nav.toggle_map();
                 }
@@ -326,6 +328,7 @@ impl Offscreen<'_> {
                     nav.add_lanes(world.traffic_inbox.peek(omsi_sim::world_data::TrafficArrivals::lanes_of));
                 }
                 nav.set_map(world.navigation_map());
+                nav.set_surface(omsi_map::package::Package::open(&world.map_dir));
                 let (line, terminus, stops, trip) = navigator::duty_parts(duty.as_ref());
                 if let (Some((key, name)), Some(sch)) = (trip, schedule.as_ref()) {
                     let lanes = sch.trip_route_in(nav.map_net().unwrap(), &name);

@@ -210,9 +210,19 @@ pub(super) fn spaced_markers(points: impl IntoIterator<Item = (usize, Vec2)>, ga
     kept
 }
 
+/// The colours of a road on the dark map and on the light one: the edge, the road, the main road.
+pub(super) fn road_colors(light: bool) -> (Color, Color, Color) {
+    if light {
+        (Color::hex(0xa8a397), Color::hex(0xffffff), Color::hex(0xf3d98b))
+    } else {
+        (ROAD_CASING, ROAD, ROAD_MAIN)
+    }
+}
+
 /// Street lanes within `ROAD_RADIUS` of `anchor`: casings first, then surfaces (so that a
 /// junction's surfaces cover each other's casings).
-pub(super) fn build_roads(p: &mut Painter, net: &Network, anchor: DVec2) {
+pub(super) fn build_roads(p: &mut Painter, net: &Network, anchor: DVec2, light: bool) {
+    let (casing, road, main) = road_colors(light);
     let rel = |q: DVec3| Vec3::new((q.x - anchor.x) as f32, (q.y - anchor.y) as f32, 0.0);
     let lanes: Vec<(MapRoad, Vec<Vec3>)> = road_geometry(net)
         .into_iter()
@@ -220,10 +230,10 @@ pub(super) fn build_roads(p: &mut Painter, net: &Network, anchor: DVec2) {
         .map(|l| { let pts = simplify(&l.points.iter().map(|q| rel(*q)).collect::<Vec<_>>(), 0.12); (l, pts) })
         .collect();
     for (l, pts) in &lanes {
-        p.ribbon(pts, l.width + 1.6, 3.6, ROAD_CASING, true);
+        p.ribbon(pts, l.width + 1.6, 3.6, casing, true);
     }
     for (l, pts) in &lanes {
-        p.ribbon(pts, l.width + 0.2, 2.4, if l.main { ROAD_MAIN } else { ROAD }, true);
+        p.ribbon(pts, l.width + 0.2, 2.4, if l.main { main } else { road }, true);
     }
 }
 

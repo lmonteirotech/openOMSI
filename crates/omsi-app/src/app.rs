@@ -573,6 +573,8 @@ impl App {
                 if let Some(n) = self.menus.navigator.as_mut() {
                     n.arrows = self.settings.nav_arrows;
                     n.show_ai = self.settings.nav_ai;
+                    n.show_surface = self.settings.nav_surface;
+                    n.light = self.settings.nav_light;
                 }
                 if let Some(d) = self.args.driver.as_deref() {
                     self.session.career = career::Career::load(&self.args.root, d);
