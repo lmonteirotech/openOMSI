@@ -458,24 +458,24 @@ mod way_user_tests {
         let point = 17.5; // the car's origin to the meeting point
         // the bus 50 m off on the main road at 11 m/s (there in about four seconds)
         let coming = user(vec![(7, -10.0), (1, 40.0)], 11.0, 0.0);
-        assert_eq!(way_user_verdict(&st, &coming, 40.0, &c, point, false, false, false, true, 1.0).0, Verdict::Ruled);
+        assert_eq!(way_user_verdict(&st, &coming, 40.0, &c, point, false, false, false, (true, false), 1.0).0, Verdict::Ruled);
         // the car has the right of way, or has claimed the junction already: it goes
-        assert_eq!(way_user_verdict(&st, &coming, 40.0, &c, point, false, false, false, false, 1.0).0, Verdict::Free);
-        assert_eq!(way_user_verdict(&st, &coming, 40.0, &c, point, false, true, false, true, 1.0).0, Verdict::Free);
+        assert_eq!(way_user_verdict(&st, &coming, 40.0, &c, point, false, false, false, (false, false), 1.0).0, Verdict::Free);
+        assert_eq!(way_user_verdict(&st, &coming, 40.0, &c, point, false, true, false, (true, false), 1.0).0, Verdict::Free);
         // far off (a gap any driver takes), or standing at a stop: it goes
         let far = user(vec![(1, 140.0)], 11.0, 0.0);
-        assert_eq!(way_user_verdict(&st, &far, 140.0, &c, point, false, false, false, true, 1.0).0, Verdict::Free);
+        assert_eq!(way_user_verdict(&st, &far, 140.0, &c, point, false, false, false, (true, false), 1.0).0, Verdict::Free);
         let standing = user(vec![(1, 20.0)], 0.0, 30.0);
-        assert_eq!(way_user_verdict(&st, &standing, 20.0, &c, point, false, false, false, true, 1.0).0, Verdict::Free);
+        assert_eq!(way_user_verdict(&st, &standing, 20.0, &c, point, false, false, false, (true, false), 1.0).0, Verdict::Free);
         // in the meeting place: whoever has the right of way, the car waits
         let there = user(vec![(1, -6.0)], 0.0, 30.0);
-        assert_eq!(way_user_verdict(&st, &there, -6.0, &c, point, false, false, false, false, 1.0).0, Verdict::Hard);
+        assert_eq!(way_user_verdict(&st, &there, -6.0, &c, point, false, false, false, (false, false), 1.0).0, Verdict::Hard);
         // in the junction and on its way through, there first: the car waits
         let crossing = user(vec![(1, -1.0)], 8.0, 0.0);
-        assert_eq!(way_user_verdict(&st, &crossing, -1.0, &c, 4.0, false, false, false, false, 1.0).0, Verdict::Hard);
+        assert_eq!(way_user_verdict(&st, &crossing, -1.0, &c, 4.0, false, false, false, (false, false), 1.0).0, Verdict::Hard);
         // through already
         let through = user(vec![(1, -20.0)], 8.0, 0.0);
-        assert_eq!(way_user_verdict(&st, &through, -20.0, &c, point, false, false, false, true, 1.0).0, Verdict::Free);
+        assert_eq!(way_user_verdict(&st, &through, -20.0, &c, point, false, false, false, (true, false), 1.0).0, Verdict::Free);
     }
 
     /// Two lanes running into one (lane 0 from the south, lane 1 slanting in from the

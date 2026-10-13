@@ -48,6 +48,9 @@ enum Btn {
     Wipers,
     SaloonLights,
     Ticket,
+    /// The Q key, held: the bus's announcement or microphone, whatever its keys put there
+    /// (#2107: a phone had no way to play the stop announcement).
+    Announce,
     Tilt,
     Info,
     Navigator,
@@ -61,7 +64,7 @@ enum Btn {
 impl Btn {
     /// Held down while the finger stays (a push button), rather than a tap.
     fn held(self) -> bool {
-        matches!(self, Btn::Door(_) | Btn::DirectDoor(_) | Btn::Horn | Btn::Engine)
+        matches!(self, Btn::Door(_) | Btn::DirectDoor(_) | Btn::Horn | Btn::Engine | Btn::Announce)
     }
 }
 
@@ -500,6 +503,7 @@ impl App {
                     (Btn::Wipers, "water_drop", "Wipers", p.vehicle.var("wiper_sw").is_some_and(|v| v > 0.5)),
                     (Btn::SaloonLights, "highlight", "Saloon lights", false),
                     (Btn::Ticket, "confirmation_number", "Sell ticket", false),
+                    (Btn::Announce, "campaign", "Announcement (Q)", false),
                     (Btn::InteriorCam, "airline_seat_recline_normal", "Next seat view", false),
                     (Btn::Navigator, "navigation", "Navigator", self.menus.navigator.as_ref().is_some_and(|n| n.enabled)),
                     (Btn::Info, "info", "Information bar", self.menus.info_bar),
@@ -963,6 +967,7 @@ impl App {
                 self.vehicle_action("ticket_give", true);
                 self.vehicle_action("ticket_give", false);
             }
+            Btn::Announce => self.tap_key(event_loop, KeyCode::KeyQ, false, down),
             Btn::InteriorCam => {
                 self.game_action("view_interiorcam_plus");
             }

@@ -397,7 +397,10 @@ impl World {
                     state.reverb_zones.push((omsi_sim::collision::Obb::from_box(bb, pos, heading), time, fade));
                 }
             }
-            if ot.sco.is_petrol_station {
+            // (Omsi.exe sets one flag for `[petrolstation]` and `[depot]` alike, 0x7b504b, and
+            // the pump looks for that flag (0x7d4d64): a depot building is a filling station
+            // too - Hamburg's Alsterdorf yard has no `[petrolstation]` object, #1847)
+            if ot.sco.is_petrol_station || ot.sco.is_depot {
                 if let Some(bb) = ot.sco.bounding_box.or_else(|| ot.local_box()) {
                     state.petrol_stations.push(omsi_sim::collision::Obb::from_box(bb, pos, heading));
                 }

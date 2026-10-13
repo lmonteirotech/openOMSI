@@ -341,6 +341,9 @@ pub struct Frame<'a> {
     pub menu: Option<(usize, &'a [(&'a str, &'a str)])>,
     /// The first line shown when a finger scrolled the menu (`App::menu_top`).
     pub menu_top: Option<f32>,
+    /// A seat or view slider of the settings window held by the mouse (its line): only that
+    /// line is drawn, over the undimmed picture, so the view can be seen changing (#2359).
+    pub menu_peek: Option<usize>,
     /// Ids of the game menu's lines that are greyed out and cannot be chosen (the timetable
     /// without an active route).
     pub menu_disabled: &'a [&'a str],
@@ -380,6 +383,9 @@ pub struct Frame<'a> {
 
 pub struct Ui {
     origin_x: f32,
+    /// The map's own picture behind the loading screen (#1383): its map, and the picture
+    /// darkened and cut to the window's shape (None: the map has none).
+    loading_pic: Option<(String, Option<(u32, u32, Vec<u8>)>)>,
     pub text: TextCache,
     pub chat: ChatWidget,
     /// Where the game menu's lines were drawn this frame (physical pixels), for the mouse.
@@ -516,7 +522,7 @@ impl Ui {
         self.chat.rect[2] += x;
     }
     pub fn new() -> Option<Ui> {
-        Some(Ui { origin_x: 0.0, text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, dd_scroll: None, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_pane_box: None, menu_pane_scroll: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default(), info_rect: None, perf: Default::default() })
+        Some(Ui { origin_x: 0.0, loading_pic: None, text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, dd_scroll: None, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_pane_box: None, menu_pane_scroll: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default(), info_rect: None, perf: Default::default() })
     }
 
     /// Draw the frame's interface: its overlays go after the HUD's in `scene.overlays`.
@@ -1251,6 +1257,12 @@ impl Ui {
         let a = |v: f32| (v * k).round().clamp(0.0, 255.0) as u8;
         let bg = self.text.solid(r, scene, [18, 18, 18, a(255.0)]);
         scene.overlays.push((bg, [0.0, 0.0, width, height]));
+        // the map's picture over the whole window, dark enough for the white over it
+        if let Some((map, Some((pw, ph, px)))) = self.loading_pic.as_ref() {
+            let ka = a(255.0);
+            let tex = self.text.cached(r, scene, (format!("\u{0}loading {map}"), *pw, [0, 0, 0, ka]), (*pw, *ph), || px.chunks_exact(3).flat_map(|c| [c[0], c[1], c[2], ka]).collect());
+            scene.overlays.push((tex, [0.0, 0.0, width, height]));
+        }
         // the wordmark, large, a little above the middle
         let lw = (560.0 * s).min(width * 0.6).round() as u32;
         let lh = (lw as f32 * 303.0 / 1142.0).round() as u32;
@@ -1312,12 +1324,44 @@ impl Ui {
         scene.overlays.push((head.tex, [bx, hy, bx + head.w as f32, hy + head.h as f32]));
     }
 
+    /// The picture of `map` (`maps/X/global.cfg`, under `root`) for the loading screen, read
+    /// once per map: `picture.jpg` (or `.png`, `.bmp`) beside its global.cfg, as the launcher
+    /// shows it, cut to the window's shape.
+    pub fn set_loading_map(&mut self, root: &std::path::Path, map: &str, window: (u32, u32)) {
+        if self.loading_pic.as_ref().is_some_and(|(m, _)| m == map) {
+            return;
+        }
+        let dir = map.replace('\\', "/").rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+        let pic = ["picture.jpg", "picture.png", "picture.bmp"]
+            .iter()
+            .map(|n| omsi_cfg::resolve_path(root, &format!("{dir}/{n}")))
+            .find(|p| p.is_file())
+            .and_then(|p| image::open(p).ok())
+            .map(|img| loading_picture(img.to_rgb8(), window));
+        self.loading_pic = Some((map.to_string(), pic));
+    }
+
     /// The loading screen alone, before the session's first picture.
     #[allow(clippy::too_many_arguments)]
     pub fn loading(&mut self, r: &Renderer, scene: &mut Scene, width: f32, height: f32, scale: f32, title: &str, progress: f32, clock: f32, tip: (&str, f32)) {
         self.loading_screen(r, scene, width, height, scale, title, progress, 1.0, clock, tip);
         self.text.end_frame(r, scene);
     }
+}
+
+/// `img` cut to the shape of a `window` (its middle kept), at most 1280 pixels wide, and
+/// darkened to two fifths: RGB.
+fn loading_picture(img: image::RgbImage, window: (u32, u32)) -> (u32, u32, Vec<u8>) {
+    let (ww, wh) = (window.0.max(1) as f32, window.1.max(1) as f32);
+    let tw = (ww.min(1280.0)).round().max(1.0) as u32;
+    let th = ((tw as f32) * wh / ww).round().max(1.0) as u32;
+    let (iw, ih) = (img.width().max(1) as f32, img.height().max(1) as f32);
+    let k = (tw as f32 / iw).max(th as f32 / ih);
+    let (sw, sh) = (((iw * k).round() as u32).max(tw), ((ih * k).round() as u32).max(th));
+    let big = image::imageops::resize(&img, sw, sh, image::imageops::FilterType::Triangle);
+    let cut = image::imageops::crop_imm(&big, (sw - tw) / 2, (sh - th) / 2, tw, th).to_image();
+    let px = cut.into_raw().into_iter().map(|v| (v as u16 * 2 / 5) as u8).collect();
+    (tw, th, px)
 }
 
 /// `text` broken into lines of at most `width` pixels, between words.
@@ -1417,6 +1461,19 @@ fn vr_settings_sidebar_step(available: f32, pages: usize, scale: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// The map's picture behind the loading screen fills a window of any shape (its middle
+    /// kept), at most 1280 pixels wide, darkened (#1383).
+    #[test]
+    fn loading_picture_covers_the_window() {
+        let img = image::RgbImage::from_fn(400, 300, |x, _| if x < 200 { image::Rgb([200, 100, 50]) } else { image::Rgb([10, 20, 30]) });
+        let (w, h, px) = super::loading_picture(img, (2560, 1080));
+        assert_eq!((w, h), (1280, 540));
+        assert_eq!(px.len(), (w * h * 3) as usize);
+        assert_eq!(&px[..3], &[80, 40, 20]);
+        let (w, h, _) = super::loading_picture(image::RgbImage::new(64, 64), (800, 600));
+        assert_eq!((w, h), (800, 600));
+    }
+
     /// The steering cross: white arms with a dark edge, open in the middle, nothing in the
     /// corners - the same in all four directions.
     #[test]

@@ -47,6 +47,64 @@ impl GpuTexture {
     }
 }
 
+/// Set where a texture could not be made for want of graphics memory (see
+/// [`try_create_texture`]); read with the device's own out-of-memory flag by
+/// `Renderer::take_out_of_memory`.
+pub(crate) static TEXTURE_OUT_OF_MEMORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `device.create_texture` where its failure can be seen: None when the card is out of
+/// memory (or refuses the texture). Made unchecked, such a texture was invalid, and so was
+/// every view, bind group and render bundle made with it afterwards - the whole scene's
+/// main pass among them: a black picture for the rest of the session while the sounds and
+/// the menus went on (#2472). A texture that cannot be made is drawn as a plain stand-in
+/// instead, and the game keeps fewer textures from then on.
+pub(crate) fn try_create_texture(device: &wgpu::Device, desc: &wgpu::TextureDescriptor) -> Option<wgpu::Texture> {
+    let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let texture = device.create_texture(desc);
+    let invalid = pollster::block_on(validation.pop());
+    let out_of_memory = pollster::block_on(memory.pop());
+    let Some(e) = out_of_memory.or(invalid) else {
+        return Some(texture);
+    };
+    TEXTURE_OUT_OF_MEMORY.store(true, std::sync::atomic::Ordering::Relaxed);
+    static FAILED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = FAILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n < 5 || n % 1000 == 0 {
+        log::warn!(
+            "texture {}x{} ({:?}, {} levels) could not be made, drawn plain instead (#{}): {e}",
+            desc.size.width,
+            desc.size.height,
+            desc.format,
+            desc.mip_level_count,
+            n + 1
+        );
+    }
+    None
+}
+
+/// A texture that could not be made, drawn as one plain grey texel (its slot counts no
+/// bytes; the next upload of that picture tries again).
+pub(crate) fn stand_in_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> GpuTexture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("stand-in"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        &[128, 128, 128, 255],
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    GpuTexture::new(texture, (1, 1), 0)
+}
+
 /// Bytes of a texture of `format` with `levels` mip levels.
 pub(crate) fn texture_bytes(format: wgpu::TextureFormat, w: u32, h: u32, levels: u32) -> u64 {
     let (bw, bh) = format.block_dimensions();
@@ -110,7 +168,7 @@ pub fn prepare_texture(
         height: h,
         depth_or_array_layers: 1,
     };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let Some(texture) = try_create_texture(device, &wgpu::TextureDescriptor {
         label: None,
         size,
         mip_level_count: levels,
@@ -121,7 +179,9 @@ pub fn prepare_texture(
             | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
-    });
+    }) else {
+        return Some(PreparedTexture(stand_in_texture(device, queue)));
+    };
     let (bw, bh) = format.block_dimensions();
     let block = format.block_copy_size(None).unwrap_or(4);
     for (l, bytes) in data.levels.iter().enumerate() {
@@ -190,7 +250,7 @@ pub(crate) fn upload_texture_format(
         height: img.height,
         depth_or_array_layers: 1,
     };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let Some(texture) = try_create_texture(device, &wgpu::TextureDescriptor {
         label: None,
         size,
         mip_level_count: mip_count,
@@ -199,7 +259,9 @@ pub(crate) fn upload_texture_format(
         format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    });
+    }) else {
+        return stand_in_texture(device, queue);
+    };
     // CPU box-filter mip chain
     let mut level: Vec<u8> = img.rgba.clone();
     let (mut w, mut h) = (img.width, img.height);
@@ -514,7 +576,7 @@ impl Renderer {
             height: img.height,
             depth_or_array_layers: 1,
         };
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        let Some(texture) = try_create_texture(&self.device, &wgpu::TextureDescriptor {
             label: None,
             size,
             mip_level_count: mip_count,
@@ -526,7 +588,9 @@ impl Renderer {
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
-        });
+        }) else {
+            return stand_in_texture(&self.device, &self.queue);
+        };
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -818,7 +882,8 @@ impl Renderer {
             return false;
         }
         let new_levels = levels - n;
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        // (no memory for the smaller copy: the texture stays as it is)
+        let Some(texture) = try_create_texture(&self.device, &wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
                 width: nw,
@@ -833,7 +898,9 @@ impl Renderer {
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
-        });
+        }) else {
+            return false;
+        };
         let encoder = drops.encoder.get_or_insert_with(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {

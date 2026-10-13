@@ -3,6 +3,11 @@
 
 use super::*;
 
+/// Somebody who got off with no pavement in reach walks away from the bus this long (s)...
+const STEP_AWAY_S: f32 = 3.0;
+/// ...and is gone this long after getting off, looked at or not (Omsi.exe: at once).
+const GONE_AFTER_S: f32 = 10.0;
+
 /// Continue from a stop in the middle or at either end of a pavement lane.
 /// A zero-length first leg at the start of a lane must not turn into another
 /// zero-length leg: the passenger would stand motionless after disembarking.
@@ -231,7 +236,16 @@ impl PeopleSim {
                 self.people[i].state = State::Strolling(walk);
                 return want;
             }
-            if !self.seen(self.people[i].position) && self.far_from_players(self.people[i].position, STROLL_RADIUS) {
+            // No pavement: out of the doorway first, a few steps away from the bus, then
+            // gone, as Omsi.exe's task 8 has nobody without a path stay (sub_626818). They
+            // stood at the doors for good, their backs to them, as long as anybody looked
+            // (#1290, #1855).
+            let p = &self.people[i];
+            if p.t_state < STEP_AWAY_S {
+                let h = p.heading.to_radians();
+                return Want { vel: DVec2::new(h.sin(), h.cos()) * p.pace.clamp(0.5, 1.5), ..Want::stand(Some(p.heading), Activity::Stand) };
+            }
+            if p.t_state > GONE_AFTER_S || (!self.seen(p.position) && self.far_from_players(p.position, STROLL_RADIUS)) {
                 remove.push(i);
             }
             Want::stand(None, Activity::Stand)

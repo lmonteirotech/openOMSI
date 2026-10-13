@@ -29,6 +29,37 @@ impl HeadPose {
 
 pub struct HeadTracker {
     last: Arc<Mutex<Option<(HeadPose, Instant)>>>,
+    /// The two last poses the frames have seen (the one before, the newest), to draw the
+    /// head between them: see [`between_poses`].
+    seen: Mutex<[Option<(HeadPose, Instant)>; 2]>,
+}
+
+/// The longest gap between two poses that is still a stream to draw the head along: a gap
+/// longer than that is a tracker that stopped and started again, and its newest pose is
+/// taken as it is.
+const STREAM_GAP: Duration = Duration::from_millis(100);
+
+/// The head at `now`, drawn along the poses as they came (`before` and `newest`, with the
+/// times they arrived): one pose interval behind the newest, so that it moves at every
+/// frame. The poses come at the tracker's rate (a webcam's 30 a second, TrackIR's 120,
+/// opentrack's own), not the frame rate: the newest pose taken each frame turned the view
+/// in steps - several frames still, then a jump - which looks like a picture out of step with
+/// the screen, and like a shaking head where the steps were small (#2216, #1983).
+pub fn between_poses(before: Option<(HeadPose, Instant)>, newest: (HeadPose, Instant), now: Instant) -> HeadPose {
+    let Some((p0, t0)) = before else { return newest.0 };
+    let (p1, t1) = newest;
+    let gap = t1.saturating_duration_since(t0);
+    if gap.is_zero() || gap > STREAM_GAP {
+        return p1;
+    }
+    let f = (now.saturating_duration_since(t1).as_secs_f32() / gap.as_secs_f32()).clamp(0.0, 1.0);
+    let lerp = |a: f32, b: f32| a + (b - a) * f;
+    // (the turns the short way round)
+    let turn = |a: f32, b: f32| a + ((b - a + 180.0).rem_euclid(360.0) - 180.0) * f;
+    HeadPose {
+        pos: [lerp(p0.pos[0], p1.pos[0]), lerp(p0.pos[1], p1.pos[1]), lerp(p0.pos[2], p1.pos[2])],
+        rot: [turn(p0.rot[0], p1.rot[0]), turn(p0.rot[1], p1.rot[1]), turn(p0.rot[2], p1.rot[2])],
+    }
 }
 
 impl HeadTracker {
@@ -114,13 +145,18 @@ impl HeadTracker {
         if listening {
             log::info!("head tracking: listening for opentrack on UDP port {port}");
         }
-        Some(HeadTracker { last })
+        Some(HeadTracker { last, seen: Mutex::new([None, None]) })
     }
 
-    /// The pose, while poses keep coming (none for half a second: the head is centred).
+    /// The pose, while poses keep coming (none for half a second: the head is centred),
+    /// drawn between the last two that came ([`between_poses`]).
     pub fn pose(&self) -> Option<HeadPose> {
-        let l = self.last.lock().ok()?;
-        l.filter(|(_, t)| t.elapsed() < Duration::from_millis(500)).map(|(p, _)| p)
+        let newest = (*self.last.lock().ok()?).filter(|(_, t)| t.elapsed() < Duration::from_millis(500))?;
+        let mut seen = self.seen.lock().ok()?;
+        if seen[1].map(|s| s.1) != Some(newest.1) {
+            *seen = [seen[1], Some(newest)];
+        }
+        Some(between_poses(seen[0], newest, Instant::now()))
     }
 }
 
@@ -532,6 +568,26 @@ mod tests {
         let p = freetrack_pose(-0.5f32.to_radians() * 60.0, 10f32.to_radians(), 5f32.to_radians(), 15.0, -20.0, 100.0);
         assert!((p.rot[0] - 30.0).abs() < 1e-3 && (p.rot[1] + 10.0).abs() < 1e-3 && (p.rot[2] - 5.0).abs() < 1e-3);
         assert_eq!(p.pos, [1.5, -2.0, 10.0]);
+    }
+
+    /// Poses 1/30 s apart (a webcam's tracker): the head is drawn between them at every
+    /// frame, one interval behind, the yaw the short way across 180 degrees (#2216).
+    #[test]
+    fn the_head_moves_between_the_poses() {
+        let t0 = Instant::now();
+        let gap = Duration::from_micros(33_333);
+        let t1 = t0 + gap;
+        let p0 = HeadPose { pos: [0.0, 0.0, 0.0], rot: [170.0, 0.0, 0.0] };
+        let p1 = HeadPose { pos: [2.0, 0.0, 0.0], rot: [-170.0, 4.0, 0.0] };
+        let at = |d: Duration| between_poses(Some((p0, t0)), (p1, t1), t1 + d);
+        assert_eq!(at(Duration::ZERO).pos[0], 0.0);
+        let half = at(gap / 2);
+        assert!((half.pos[0] - 1.0).abs() < 1e-3 && (half.rot[1] - 2.0).abs() < 1e-3, "{half:?}");
+        assert!((half.rot[0] - 180.0).abs() < 1e-3, "{half:?}");
+        assert_eq!(at(gap * 3).pos[0], 2.0);
+        // the first pose, and one after a pause: as it is
+        assert_eq!(between_poses(None, (p1, t1), t1).pos[0], 2.0);
+        assert_eq!(between_poses(Some((p0, t0)), (p1, t0 + Duration::from_millis(400)), t0 + Duration::from_millis(400)).pos[0], 2.0);
     }
 
     /// The head 10 cm to the right (opentrack's x -10), 5 cm up and 20 cm back: the eye goes

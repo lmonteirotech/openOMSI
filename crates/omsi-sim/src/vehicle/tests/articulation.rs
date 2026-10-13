@@ -599,3 +599,33 @@ fn cached_variable_ids_answer_as_the_names() {
     }
     assert!(v.trailers[0].axle_ids.spring_factor.iter().any(|i| i.is_some()));
 }
+
+/// Another player's GN92 standing on a slope: its rear section keeps the pose and the lean
+/// their game sends, and its wheels stand still with the bus (#1177: re-walked behind our
+/// copy of the front, the rear section lost its lean and its axle turned for ever).
+#[test]
+#[ignore = "needs the original OMSI 2 install (OMSI_ROOT)"]
+fn a_remote_rear_section_keeps_its_pose_and_its_wheels_stand() {
+    let root = original_root();
+    let bus = root.join("Vehicles/MAN_NL_NG/MAN_GN92_main.bus");
+    let trail = root.join("Vehicles/MAN_NL_NG/MAN_GN92_trail.bus");
+    require_content(&[&bus, &trail]);
+    let ty = Arc::new(VehicleType::load(&root, &bus).expect("GN92"));
+    let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+    v.attach_trailer_ex(Arc::new(VehicleType::load(&root, &trail).expect("GN92 trail")), false);
+    // the front climbs a 6 % grade heading north; the rear section stands 0.5 m lower
+    v.pitch = 3.4;
+    v.update_visuals(0.02);
+    let c = v.trailers[0].coupling_point(v.position, v.body_rotation());
+    let at = v.trailers[0].position + glam::DVec3::new(0.3, 0.0, -0.5);
+    let rot_before = v.trailers[0].odometer;
+    for _ in 0..50 {
+        v.trailers[0].set_remote_pose(at, 2.0, c);
+        v.update_visuals(0.02);
+    }
+    let t = &v.trailers[0];
+    assert!((t.position - at).length() < 1e-6, "moved to {:?}", t.position);
+    assert!((t.heading - 2.0).abs() < 1e-9, "heading {}", t.heading);
+    assert!(t.pitch > 1.0, "nose up towards the front section: {}", t.pitch);
+    assert_eq!(t.odometer, rot_before, "its wheels turned on a standing bus");
+}

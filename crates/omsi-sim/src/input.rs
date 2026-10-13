@@ -66,6 +66,9 @@ pub struct KeyboardAxes {
     /// the throttle key is pressed - tap the brake and it keeps that pressure. Off, the brake
     /// comes off with its key, as in most games. (The throttle never stays: see `update`.)
     pub pedal_hold: bool,
+    /// How fast the throttle and the brake keys push their pedals down, against OMSI's
+    /// (0 or 1: OMSI's 2 and 1 a second; less: a finer foot on the keys, #1371).
+    pub pedal_speed: f32,
     /// The steering is on its way back to the middle (Omsi.exe +0x5d6): set by the
     /// `steering_neutral` key, cleared by a steering key.
     pub centering: bool,
@@ -100,6 +103,7 @@ impl KeyboardAxes {
             red_steer_spd: self.red_steer_spd,
             lock_curvature: self.lock_curvature,
             pedal_hold: self.pedal_hold,
+            pedal_speed: self.pedal_speed,
             centering: self.centering,
             ..Default::default()
         };
@@ -164,15 +168,16 @@ impl KeyboardAxes {
         // and takes the throttle off; let go, the brake stays where it is until the throttle
         // key is pressed, or eases off at 0.5 a second while throttle_amplify is held.
         let top = if self.amplify_key { 1.0 } else { 0.85 };
+        let k = if self.pedal_speed > 0.0 { self.pedal_speed } else { 1.0 };
         if self.throttle_key {
             self.brake = 0.0;
-            self.throttle = (self.throttle + 2.0 * dt).min(top);
+            self.throttle = (self.throttle + 2.0 * k * dt).min(top);
         } else {
             self.throttle = (self.throttle - dt).max(0.0);
         }
         if self.brake_key {
             self.throttle = 0.0;
-            self.brake = (self.brake + dt).min(1.0);
+            self.brake = (self.brake + k * dt).min(1.0);
         } else if !self.pedal_hold {
             self.brake = (self.brake - 3.0 * dt).max(0.0);
         } else if self.amplify_key {
@@ -248,6 +253,26 @@ impl KeyboardAxes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The keyboard's pedal speed: half of OMSI's takes the throttle to its 0.85 in 0.85 s
+    /// instead of 0.425 s, the brake to the floor in 2 s; 0 is OMSI's (#1371).
+    #[test]
+    fn the_pedal_keys_go_at_the_speed_set() {
+        let run = |k: f32, throttle: bool| {
+            let mut a = KeyboardAxes { pedal_speed: k, throttle_key: throttle, brake_key: !throttle, ..Default::default() };
+            for _ in 0..25 {
+                a.update(0.01);
+            }
+            if throttle { a.throttle } else { a.brake }
+        };
+        assert!((run(0.0, true) - 0.5).abs() < 1e-4);
+        assert!((run(1.0, true) - 0.5).abs() < 1e-4);
+        assert!((run(0.5, true) - 0.25).abs() < 1e-4);
+        assert!((run(0.5, false) - 0.125).abs() < 1e-4);
+        let mut a = KeyboardAxes { pedal_speed: 0.5, ..Default::default() };
+        a.release_all();
+        assert_eq!(a.pedal_speed, 0.5);
+    }
 
     #[test]
     fn linear_and_old_steering_as_omsi() {

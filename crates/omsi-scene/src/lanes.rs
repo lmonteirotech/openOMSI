@@ -84,6 +84,7 @@ pub(super) fn spline_lanes(
         // `Lane::allows`; `bus` does not close it to cars)
         let rule_bus = rule_of("bus").is_some();
         let rule_trucks = rule_of("trucks").is_some();
+        let no_overtaking = rule_of("overtaking_prohib").is_some();
         let priority = rule_of("priority");
         let mut push = |pts: Vec<DVec3>, reversed: bool| {
             let mut l = LaneBuilder::polyline(pts, kind, p.width);
@@ -98,6 +99,7 @@ pub(super) fn spline_lanes(
             l.no_cars = no_cars;
             l.rule_bus = rule_bus;
             l.rule_trucks = rule_trucks;
+            l.no_overtaking = no_overtaking;
             l.source = 1;
             l.key = Some(LaneKey {
                 tile,
@@ -211,6 +213,7 @@ pub(super) fn object_lanes(
         });
         let rule_bus = rule_of("bus").is_some();
         let rule_trucks = rule_of("trucks").is_some();
+        let no_overtaking = rule_of("overtaking_prohib").is_some();
         // who goes first where this path meets another (`Network::must_yield`)
         let priority = rule_of("priority");
         let mut push = |reverse: bool| {
@@ -227,6 +230,7 @@ pub(super) fn object_lanes(
             l.no_cars = no_cars;
             l.rule_bus = rule_bus;
             l.rule_trucks = rule_trucks;
+            l.no_overtaking = no_overtaking;
             l.turn = turn;
             if let Some(v) = priority {
                 l.priority = v;

@@ -167,6 +167,11 @@ impl PeopleSim {
         self.message.take()
     }
 
+    /// What a rider of the player's bus has just said (see `dialog`).
+    pub fn take_dialog(&mut self) -> Option<String> {
+        self.dialog.take()
+    }
+
     /// What the driver should do now, for the HUD: a passenger waiting at the cash desk
     /// for the ticket (only when the driver has to sell it).
     pub fn hint(&self) -> Option<String> {

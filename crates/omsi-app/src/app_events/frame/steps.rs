@@ -391,7 +391,10 @@ pub(crate) fn throw_spray(
     }
     if quality >= 2 {
         if let Some(t) = traffic {
-            vehicles.extend(t.cars.iter().map(|c| (c.id.wrapping_add(1), &c.vehicle)));
+            // (road vehicles only: an aircraft on its flight path - Bremen's gull, a plane
+            // coming in to land - or a train threw spray from the wet road under it, where no
+            // car was, #1330)
+            vehicles.extend(t.cars.iter().filter(|c| t.net.lanes.get(c.state.lane).is_some_and(|l| l.kind == omsi_sim::traffic::LaneKind::Street)).map(|c| (c.id.wrapping_add(1), &c.vehicle)));
         }
         vehicles.extend(remotes.remotes.iter().map(|(id, r)| (puddles::REMOTE_KEY | *id as u64, r.vehicle())));
     }

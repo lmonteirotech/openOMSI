@@ -153,6 +153,14 @@ impl Money {
         self.placed = keep;
     }
 
+    /// The driver picks coin `k` of `placed` up again (a coin of the change, clicked).
+    pub fn take_coin(&mut self, k: usize) {
+        if k < self.placed.len() {
+            let p = self.placed.remove(k);
+            self.hidden.push(p.0);
+        }
+    }
+
     pub fn change_value(&self) -> f32 {
         let coins: Vec<usize> = self.placed.iter().filter(|p| p.3).map(|p| p.2).collect();
         self.value_of(&coins)
@@ -177,5 +185,18 @@ mod tests {
         }
         // 80 coins: all at the point's height (they were 80 * 3 mm = 24 cm high before)
         assert!((top - point.z).abs() < 1e-6, "{top}");
+    }
+
+    #[test]
+    fn a_coin_of_the_change_is_picked_up_alone() {
+        let mut m = Money { currency: None, dir: PathBuf::new(), meshes: HashMap::new(), placed: Vec::new(), hidden: Vec::new(), rng: 7 };
+        m.placed.push((10, Mat4::IDENTITY, 0, false, None));
+        m.placed.push((11, Mat4::IDENTITY, 1, true, None));
+        m.placed.push((12, Mat4::IDENTITY, 2, true, None));
+        m.take_coin(1);
+        assert_eq!(m.placed.iter().map(|p| p.0).collect::<Vec<_>>(), vec![10, 12]);
+        assert_eq!(m.hidden, vec![11]);
+        m.take_coin(9);
+        assert_eq!(m.placed.len(), 2);
     }
 }

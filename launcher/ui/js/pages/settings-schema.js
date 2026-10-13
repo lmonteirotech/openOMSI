@@ -154,10 +154,12 @@ const driving = {
         { type: 'slider', key: 'mouse_sens', label: 'Mouse steering sensitivity (O)', min: 0.1, max: 3, step: 0.05, def: 1, format: omsiPct, store: r2 },
         { type: 'slider', key: 'mouse_pedal_strength', label: 'Mouse pedal strength', min: 0.5, max: 2, step: 0.05, def: 1, format: omsiPct, store: r2 },
         { type: 'toggle', key: 'mouse_smooth', label: 'Smooth mouse steering (off: the wheel follows the cursor at once, as in OMSI)' },
+        { type: 'toggle', key: 'mouse_pedals', label: 'The mouse works the pedals', help: 'Up the throttle, down the brake, as in OMSI; off: the mouse only steers, the pedals stay on the keys' },
         { type: 'toggle', key: 'mouse_hold', label: "Hold the cursor while the mouse steers (off: the crosshair stays free, the window's edges are the lock)" },
         { type: 'toggle', key: 'mouse_right_off', label: 'A right click ends the mouse steering (as in OMSI)' },
         { type: 'toggle', key: 'blinker_cancel', label: "Indicators cancel themselves (as the bus's script does)" },
         { type: 'toggle', key: 'brake_hold', label: 'The keyboard brake stays on until the throttle (as in OMSI)' },
+        { type: 'slider', key: 'key_pedal_speed', label: 'Pedal keys speed (100 % = OMSI)', min: 0.25, max: 2, step: 0.05, def: 1, format: omsiPct, store: r2 },
         { type: 'toggle', key: 'auto_clutch', label: 'Automatic clutch (manual gearboxes)' },
         { type: 'toggle', key: 'auto_shift', label: 'Automated manual gearbox (shifts a manual gearbox for you by the engine speed)' },
         { type: 'button', label: 'Change the keys', icon: 'keyboard', controls: 0 },
@@ -332,6 +334,8 @@ const gameplay = {
         { type: 'select', key: 'ai_unsched_factor', label: 'Random traffic', options: [['25', '25%'], ['50', '50%'], ['75', '75%'], ['100', '100%'], ['150', '150%'], ['200', '200%']] },
         { type: 'select', key: 'ai_max_scheduled', label: 'Timetable vehicles', options: [['0', 'All'], ['10', 'At most 10'], ['25', 'At most 25'], ['50', 'At most 50']] },
         { type: 'select', key: 'ai_max_parked', label: 'Parked cars', options: [['-1', 'None'], ['0', 'Every space'], ['35', 'At most 35'], ['100', 'At most 100'], ['250', 'At most 250']] },
+        // (OMSI's AIMaxHumans, #2087)
+        { type: 'select', key: 'ai_max_humans', label: 'People at once', options: [['50', '50'], ['100', '100'], ['200', '200'], ['400', '400'], ['720', '720'], ['1000', '1000']] },
         // (off: an early bus waits at every stop, as in OMSI)
         { type: 'toggle', key: 'ai_wait_timed_stops_only', label: 'Timetable buses ahead of time wait only at timed stops' },
       ],

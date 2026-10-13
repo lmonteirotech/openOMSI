@@ -358,6 +358,9 @@ impl LaneSeq {
     }
 }
 
+/// How many lanes deep a car looks for a way on that leads only into lanes closed to it.
+const TRAP_DEPTH: u32 = 3;
+
 impl AiState {
     pub fn new(lane: usize, s: f32, seed: u64) -> AiState {
         AiState { traffic_pool: None, veh_type: 0, lane, s, speed: 0.0, max_speed_kmh: 50.0, accel: 1.2, decel: 3.0, length: 5.0, rng: seed | 1, blinker: 0, braking: false, brake_lamp: 0.0, odometer: 0.0, planned_next: None, ahead: Vec::new(), change_plan: Vec::new(), prev_lane: None, yield_time: 0.0, route: Vec::new(), route_index: 0, change: None, change_cooldown: 5.0, lateral: 0.0, lateral_target: 0.0, lateral_ramp: (0.0, 0.0, 0.0, 1.0), turn_wish: 0, signal: 0, signal_time: 0.0, lat_accel: 2.8, desire: 1.0, headway: 1.4, min_gap: 2.0, accept_gap: 4.0, reaction: 0.7, front: 2.5, rear: 2.5, held: false, start_timer: 0.0, acc: 0.0, accel_cap: None, ordinary_brake: ORDINARY_BRAKE, emergency_brake: MAX_BRAKE, jerk: JERK, cmd: 0.0, emergency: false, emergency_began: false, body: BodyLink::default(), nudge_ramp: (0.0, 0.0, 0.0, 1.0), priority_drive: false, speed_cap: None }
@@ -387,28 +390,42 @@ impl AiState {
         // takes only the ways its pool may go, as it was put on one. A forbidden exit
         // remains forbidden even if every exit is closed; normal end-of-route handling
         // must deal with that, rather than driving into a pedestrian or restricted lane.)
-        let open_to = |pooled: bool| -> Vec<usize> {
-            l.next
-                .iter()
-                .copied()
-                .filter(|&n| {
-                    let nl = &net.lanes[n];
-                    let d = match self.traffic_pool.as_ref().filter(|_| pooled) {
-                        Some((p, defaults)) => nl.pool_density(defaults, *p),
-                        None => nl.density,
-                    };
-                    nl.allows(self.veh_type) && d > 0.0
-                        // Reject the short return only when the graph links both ways.
-                        // Keep the graph itself intact: reach and upstream route choices
-                        // retain their existing behavior.
-                        && (!nl.next.contains(&lane) || nl.continues_from(l, LINK_TOLERANCE))
-                })
-                .collect()
+        let pool = self.traffic_pool.as_ref();
+        let veh_type = self.veh_type;
+        // may it drive from lane `from` into lane `n`?
+        let open = |pooled: bool, from: usize, n: usize| -> bool {
+            let (fl, nl) = (&net.lanes[from], &net.lanes[n]);
+            let d = match pool.filter(|_| pooled) {
+                Some((p, defaults)) => nl.pool_density(defaults, *p),
+                None => nl.density,
+            };
+            nl.allows(veh_type) && d > 0.0
+                // Reject the short return only when the graph links both ways.
+                // Keep the graph itself intact: reach and upstream route choices
+                // retain their existing behavior.
+                && (!nl.next.contains(&from) || nl.continues_from(fl, LINK_TOLERANCE))
         };
+        let open_to = |pooled: bool| -> Vec<usize> { l.next.iter().copied().filter(|&n| open(pooled, lane, n)).collect() };
         let pooled = self.traffic_pool.is_some().then(|| open_to(true));
         let weighted = pooled.is_some();
-        let open = pooled.unwrap_or_else(|| open_to(false));
-        let mut choices = open;
+        let open_now = pooled.unwrap_or_else(|| open_to(false));
+        let mut choices = open_now;
+        // not into a lane that leads on only into lanes closed to it (a junction whose every
+        // exit has density 0 for it): the car came to the end of that lane with nowhere to
+        // go and vanished there in the middle of the road (#2466). The end of the network
+        // itself (no lane on at all) is the map's edge, where Omsi.exe takes its cars away.
+        // (looked at a few lanes deep: the trap is often a junction's paths after a short
+        // piece of road)
+        fn trapped(net: &Network, open: &dyn Fn(usize, usize) -> bool, n: usize, depth: u32) -> bool {
+            let nl = &net.lanes[n];
+            !nl.next.is_empty() && depth > 0 && nl.next.iter().all(|&m| !open(n, m) || trapped(net, open, m, depth - 1))
+                || (!nl.next.is_empty() && depth == 0 && !nl.next.iter().any(|&m| open(n, m)))
+        }
+        let open_for = |from: usize, n: usize| open(weighted, from, n);
+        let way_on: Vec<usize> = choices.iter().copied().filter(|&n| !trapped(net, &open_for, n, TRAP_DEPTH)).collect();
+        if !way_on.is_empty() {
+            choices = way_on;
+        }
         // and a way that goes on rather than into the end of the network, where there is
         // the choice (the map's edge is where OMSI takes its cars away; a village like
         // Grundorf had a queue of twenty growing at the end of its one outbound road)
@@ -417,6 +434,26 @@ impl AiState {
             if !through.is_empty() {
                 choices = through;
             }
+        }
+        // Nothing open on but lanes of density 0 (a junction whose paths the map gives no
+        // traffic of their own, as Berlin-Spandau's): Omsi.exe's `[rule] trafficdensity` is
+        // where and how often it puts cars on the road, not where they may drive, so a car
+        // drives on into what its vehicle type may use rather than end in the middle of the
+        // road (it vanished there in plain view at 40 km/h, #2466). Lanes closed to it
+        // (`no_cars`, bus and truck rules, Omsi.exe 0x71d714) stay closed, and so does a
+        // lane the map closes to the car's pool by a rule of its own (a group's
+        // `trafficdensity` other than the first, which is the path's density itself).
+        if choices.is_empty() && l.kind == LaneKind::Street {
+            let pool_closed = |nl: &Lane| pool.is_some_and(|(p, _)| *p != 0 && nl.group_density.iter().any(|&(g, v)| g as usize == *p && v <= 0.0));
+            choices = l
+                .next
+                .iter()
+                .copied()
+                .filter(|&n| {
+                    let nl = &net.lanes[n];
+                    nl.kind == LaneKind::Street && nl.allows(veh_type) && !pool_closed(nl) && (!nl.next.contains(&lane) || nl.continues_from(l, LINK_TOLERANCE))
+                })
+                .collect();
         }
         if self.turn_wish != 0 {
             let wished: Vec<usize> = choices.iter().copied().filter(|&n| net.lanes[n].turn == self.turn_wish).collect();

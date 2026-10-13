@@ -204,7 +204,9 @@ impl ScheduleSim {
                             .find(|(_, s)| !**s)
                             .map(|(st, _)| st.1)
                     })
-                });
+                })
+                // (the bus's times are on the traffic's clock, which counts on past 24:00)
+                .map(|t| t - self.day_base);
                 on_road.insert(
                     i,
                     OnRoad {
@@ -428,7 +430,7 @@ mod tests {
         sim.data.trips.push(omsi_timetable::Trip { terminus: "Betriebsfahrt".into(), stations: vec![42], ..Default::default() });
         sim.departures.push(Departure {
             time: 100.0, trip: 0, profile: 0, line: "Diensttafeln".into(), ai_group: "depot".into(),
-            tour: "101 Mo-Do".into(), mask: -1, spawned: false,
+            tour: "101 Mo-Do".into(), mask: -1, spawned: false, yesterday: false,
         });
         sim.times = vec![vec![TripTimes { stations: vec![(0.0, 0.0)], stops: vec![true], ..Default::default() }]];
         sim.visits.insert(42, vec![(0, 0)]);
@@ -448,7 +450,7 @@ mod tests {
         });
         sim.departures.push(Departure {
             time: 100.0, trip: 0, profile: 0, line: "7".into(), ai_group: "depot".into(),
-            tour: "1".into(), mask: -1, spawned: false,
+            tour: "1".into(), mask: -1, spawned: false, yesterday: false,
         });
         sim.times = vec![vec![TripTimes { stations: vec![(0.0, 0.0)], stops: vec![true], ..Default::default() }]];
         sim.visits.insert(42, vec![(0, 0)]);
@@ -470,6 +472,53 @@ mod tests {
         assert_eq!(boards[&42].iter().map(|r| (r.0.as_str(), r.1.as_str())).collect::<Vec<_>>(), [("7", destination), ("8", destination)]);
         assert_eq!(pages["markt"].iter().map(|r| r.destination.as_str()).collect::<Vec<_>>(), [destination, destination]);
         assert_eq!(sim.depots["depot"][0].2.as_ref().unwrap().termini[0].strings[0], "     U Marktstraße   über Bahnhof");
+    }
+
+    /// A night tour of today (23:00, 24:30) and the same tour's 24:30 as yesterday's, at
+    /// 00:30 (#2166).
+    fn night_tour(sim: &mut ScheduleSim) {
+        sim.data.trips.push(omsi_timetable::Trip { terminus: "Bahnhof".into(), line: "N1".into(), stations: vec![42], ..Default::default() });
+        sim.times = vec![vec![TripTimes { stations: vec![(0.0, 0.0)], stops: vec![true], duration: 600.0, ..Default::default() }]];
+        let mask = sim.day_bits.0 | sim.day_bits.1;
+        let d = |time: f64, yesterday: bool| Departure {
+            time, trip: 0, profile: 0, line: "N1".into(), ai_group: "depot".into(), tour: "1".into(), mask, spawned: false, yesterday,
+        };
+        sim.departures = vec![d(1800.0, true), d(82_800.0, false), d(88_200.0, false)];
+        sim.night_twin = super::load::night_twins(&sim.departures);
+        sim.tour_next = vec![None, Some(2), None];
+        sim.tour_prev = vec![None, None, Some(1)];
+    }
+
+    #[test]
+    fn a_night_trip_after_midnight_runs_as_yesterdays_tour() {
+        let mut sim = schedule();
+        night_tour(&mut sim);
+        assert_eq!(sim.night_twin, [Some(2), None, Some(0)]);
+        // today the tour runs from 23:00 into the night; this morning's 00:30 was yesterday's
+        assert!(sim.runs(1) && sim.runs(2));
+        assert!(!sim.runs(0), "yesterday's tour does not run on yesterday's day mask");
+        // midnight: the day moves on, and the 24:30 comes at 00:30 as yesterday's
+        sim.roll_day(DAY + 10.0);
+        assert!(sim.runs(0), "after midnight the night trip is yesterday's tour's");
+        assert!(!sim.departures[0].spawned);
+        let tod = 1800.0 + 1.0;
+        assert!(sim.departures[0].time <= tod && sim.departures[0].time > tod - 5.0, "due at 00:30");
+        assert_eq!(sim.dep_time(0), DAY + 1800.0);
+    }
+
+    #[test]
+    fn the_tour_bus_on_a_night_trip_at_midnight_keeps_it_as_yesterdays() {
+        let mut sim = schedule();
+        night_tour(&mut sim);
+        // 23:55: the tour's bus will take the 24:30 on after its 23:00 trip
+        sim.departures[2].spawned = true;
+        sim.awaiting.insert(2);
+        sim.car_departure.insert(7, 1);
+        sim.roll_day(DAY + 10.0);
+        assert!(sim.awaiting.contains(&0) && !sim.awaiting.contains(&2));
+        assert!(sim.departures[0].spawned, "no second bus for the trip its tour's bus takes on");
+        assert!(!sim.departures[2].spawned, "tonight's 24:30 runs again");
+        assert_eq!(sim.dep_time(0), DAY + 1800.0, "the same moment as before midnight");
     }
 
 }

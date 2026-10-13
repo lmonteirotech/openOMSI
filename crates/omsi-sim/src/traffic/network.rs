@@ -308,17 +308,22 @@ impl Network {
     }
 
     /// Do signs decide between lanes `a` and `b` (different `[rule] priority`, or a ring
-    /// and its entry), rather than right-before-left or who turns across whom?
+    /// and its entry), rather than who came first or who turns across whom?
     pub fn signed(&self, a: usize, b: usize) -> bool {
         let (la, lb) = (&self.lanes[a], &self.lanes[b]);
         (la.priority - lb.priority).abs() > 0.5 || la.ring != lb.ring
     }
 
     /// Must a vehicle on lane `a` let one on lane `b` go first where they meet? The path with
-    /// the higher `[rule] priority` goes first; between equals, a left turn waits for the
-    /// oncoming traffic, and otherwise the one coming from the right has the right of way
-    /// (the German "rechts vor links" that the stock maps rely on wherever they set no
-    /// priorities) - mirrored on a left-hand-traffic map. A train always goes first.
+    /// the higher `[rule] priority` goes first; between equals a turn across the oncoming
+    /// traffic (left, or right when driving on the left) waits for it, and otherwise nobody
+    /// has to: who comes first goes first, by the claims the cars make (`junction_stop`).
+    /// That is Omsi.exe's rule (FUN_00716970: TrafficPriority, then a path reserved or taken
+    /// already, then `[rule] priority`, then the vehicle going straight before the one
+    /// turning left - no priority to the right). A right-before-left of our own made the
+    /// main road's cars stop for every car out of a side road on their right where a map
+    /// sets no priorities, the player's bus included (#2058, #1452). A train always goes
+    /// first.
     pub fn must_yield(&self, a: usize, b: usize) -> bool {
         let (la, lb) = (&self.lanes[a], &self.lanes[b]);
         if la.kind == LaneKind::Rail {
@@ -333,7 +338,7 @@ impl Network {
         // Where the map sets no priorities on a roundabout the ring goes before the entry
         // (StVO §8(1a), and how drivers everywhere take a ring). Omsi.exe has no ring rule:
         // there it is first come, first served unless the map gives the ring a higher
-        // `[rule] priority`; right-before-left would give the entry the way here.
+        // `[rule] priority`.
         if la.ring != lb.ring {
             return lb.ring;
         }
@@ -344,17 +349,8 @@ impl Network {
             // oncoming
             return la.turn == across && lb.turn != across;
         }
-        // `b` comes from the right when it travels to the left of `a`'s way (from the left,
-        // travelling to its right, on a left-hand-traffic map)
-        let rel = if self.left_hand { -rel } else { rel };
-        if rel < -30.0 {
-            return true;
-        }
-        if rel > 30.0 {
-            return false;
-        }
         // side by side from the same direction: the one turning across the other waits
-        la.turn != 0 && lb.turn == 0
+        rel.abs() <= 30.0 && la.turn != 0 && lb.turn == 0
     }
 
     /// The lane beside `lane` at `s` that carries the traffic the other way (the other half

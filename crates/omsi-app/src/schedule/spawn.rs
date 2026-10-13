@@ -193,7 +193,12 @@ impl Schedule {
         // nobody may see a bus appear (except while the map loads)
         // (the map-loading exemption holds only while the world is being built: a departure
         // of that moment that had to wait popped up in plain view minutes later)
-        if !(self.sim.queued_at_startup(i) && traffic.loading_phase()) && !traffic.may_appear(world, at_pos) {
+        // - but a bus due to leave its first stop now comes there in view as well: a terminus
+        // the player watched never had its buses, every one of them kept back until the
+        // player had driven a stop or two away, while in OMSI 2 they stand there and leave on
+        // time (#2235)
+        let due_at_start = leg == 0 && frac < 0.01 && (-30.0..=60.0).contains(&(departure - day_time));
+        if !(self.sim.queued_at_startup(i) && traffic.loading_phase()) && !due_at_start && !traffic.may_appear(world, at_pos) {
             log::debug!("trip {trip_name}: the bus would appear in view");
             return Placed::Busy;
         }
@@ -252,6 +257,7 @@ impl Schedule {
         if let Some(b) = car.bus.as_mut() {
             b.layover = departure > day_time
                 && b.stops.front().map(|st| st.ri == 0 && (st.s - s).abs() < 2.0).unwrap_or(false);
+            b.put_out = b.layover;
             b.route_open = end < slots.len();
             b.terminus = terminus.clone();
             b.last_stop = last_stop;

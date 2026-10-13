@@ -94,7 +94,8 @@ fn run(t: &mut TrafficSim, ids: &[u64], secs: f32, mut each: impl FnMut(&mut Tra
         t.tick(dt, None);
         time += dt;
         let boarding = t.cars.iter().filter(|c| c.at_station()).count();
-        assert!(boarding <= 1, "{boarding} buses with their doors open at one berth at {time:.1} s");
+        // (the bus at the berth and the one right behind it, as in OMSI 2 - never a third)
+        assert!(boarding <= 2, "{boarding} buses with their doors open at one stop at {time:.1} s");
         for (k, &id) in ids.iter().enumerate() {
             let Some(c) = t.cars.iter().find(|c| c.id == id) else { continue };
             let b = c.bus.as_ref().unwrap();
@@ -109,18 +110,21 @@ fn run(t: &mut TrafficSim, ids: &[u64], secs: f32, mut each: impl FnMut(&mut Tra
     logs
 }
 
-/// Three buses come to one stop close behind each other: each docks at the berth in turn
-/// and serves the stop once, none opens its doors up the queue, and none docks while the
-/// one before it is still in the berth.
+/// Three buses come to one stop close behind each other: the first docks at the berth, the
+/// one right behind it serves the stop from where it stands at the same time (as two buses at
+/// a stop do in OMSI 2, #2429), the third waits and docks once the berth is free. Each serves
+/// the stop once, and none docks while another is still in the berth.
 #[test]
 fn three_buses_at_one_berth_serve_it_once_each_in_turn() {
     let f = Fixture::new();
     let mut t = road(&f);
     let ids = [add_bus(&mut t, &f, 1, 220.0, 8.0, 0.0), add_bus(&mut t, &f, 2, 195.0, 8.0, 0.0), add_bus(&mut t, &f, 3, 170.0, 8.0, 0.0)];
     let mut docked_while_occupied = false;
+    let mut together = false;
     let logs = run(&mut t, &ids, 150.0, |t, _| {
-        // the one with the doors open is in the berth alone: nobody else's body in it
-        for c in t.cars.iter().filter(|c| c.at_station()) {
+        together |= t.cars.iter().filter(|c| c.at_station()).count() == 2;
+        // the one with the doors open at the berth is in it alone: nobody else's body in it
+        for c in t.cars.iter().filter(|c| c.at_station() && c.bus.as_ref().is_some_and(|b| b.held_berth().is_some())) {
             for o in t.cars.iter().filter(|o| o.id != c.id) {
                 let (a, b) = (o.state.s - o.state.rear, o.state.s + o.state.front);
                 docked_while_occupied |= b > STOP_S - c.state.rear && a < STOP_S + c.state.front;
@@ -129,9 +133,11 @@ fn three_buses_at_one_berth_serve_it_once_each_in_turn() {
     });
     for (k, l) in logs.iter().enumerate() {
         assert_eq!(l.opened_at.len(), 1, "bus {} opened its doors {} times: {l:?}", ids[k], l.opened_at.len());
-        assert!(l.opened_at[0].abs() < 2.5, "bus {} served the stop {:.1} m before its point", ids[k], l.opened_at[0]);
-        assert!(l.held);
     }
+    assert!(logs[0].opened_at[0].abs() < 2.5 && logs[0].held, "{:?}", logs[0]);
+    assert!(logs[1].opened_at[0] > 2.5 && logs[1].opened_at[0] < berths::SERVE_QUEUED_REACH, "the second served from {:.1} m", logs[1].opened_at[0]);
+    assert!(logs[2].opened_at[0].abs() < 2.5 && logs[2].held, "{:?}", logs[2]);
+    assert!(together, "the first two served the stop together");
     assert!(!docked_while_occupied, "a bus docked into another one");
     assert_eq!(t.berths.holder(berths::BerthKey { stop: STOP_ID, lane: 0 }), None);
     assert_eq!(t.berths.granted, t.berths.released);
@@ -171,6 +177,7 @@ fn a_berth_held_for_long_is_served_from_behind() {
     let mut t = road(&f);
     let resting = add_bus(&mut t, &f, 1, STOP_S, 0.0, 900.0);
     t.cars.iter_mut().find(|c| c.id == resting).unwrap().bus.as_mut().unwrap().layover = true;
+    t.cars.iter_mut().find(|c| c.id == resting).unwrap().bus.as_mut().unwrap().put_out = true;
     let coming = add_bus(&mut t, &f, 2, 200.0, 8.0, 0.0);
     let logs = run(&mut t, &[resting, coming], 90.0, |_, _| {});
     assert!(logs[0].held && logs[0].opened_at.is_empty(), "the layover bus: {:?}", logs[0]);
@@ -189,8 +196,10 @@ fn a_layover_behind_moves_up_once_the_berth_is_free() {
     let mut t = road(&f);
     let first = add_bus(&mut t, &f, 1, STOP_S, 0.0, 100.0);
     t.cars.iter_mut().find(|c| c.id == first).unwrap().bus.as_mut().unwrap().layover = true;
+    t.cars.iter_mut().find(|c| c.id == first).unwrap().bus.as_mut().unwrap().put_out = true;
     let second = add_bus(&mut t, &f, 2, 230.0, 6.0, 900.0);
     t.cars.iter_mut().find(|c| c.id == second).unwrap().bus.as_mut().unwrap().layover = true;
+    t.cars.iter_mut().find(|c| c.id == second).unwrap().bus.as_mut().unwrap().put_out = true;
     let mut moved_open = false;
     run(&mut t, &[first, second], 200.0, |t, _| {
         moved_open |= t.cars.iter().any(|c| c.id == second && c.at_station() && c.state.speed > 0.1);

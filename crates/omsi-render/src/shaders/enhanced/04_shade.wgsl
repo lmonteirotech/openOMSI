@@ -275,12 +275,15 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
         let masked = (u32(material.params2.w + 0.5) & 1u) != 0u;
         let metal_ok = (u32(material.params2.w + 0.5) & 4u) != 0u;
         metal = select(0.0, smoothstep(0.3, 0.85, refl), masked || metal_ok);
-        // (where the mask says nothing reflects - a tyre or a seal on the body's texture -
-        // it is no coat but the rough rubber or plastic of an unpolished surface. Any share
-        // at all is lacquer: the stock bodies' masks hold a few per cent - the MAN NL's
-        // 15 of 255 - which says how much the paint mirrors, not that it is rough; taken
-        // as roughness up to a share of a half, every such body came out matte, #2067)
-        let coat_rough = mix(0.8, 0.06, smoothstep(0.0, 0.04, refl));
+        // The coat is as smooth as lets it mirror, averaged over the angles, the share
+        // Omsi.exe lays over it: a polished 4 % coat mirrors 8.7 % on average (Fresnel's
+        // rise at grazing), a rough one less (2.5 % at 0.8, its grazing light scattered and
+        // shadowed by its own roughness). So a share of 8.7 % and more is smooth lacquer, the
+        // stock bodies' few per cent - the MAN NL's 15 of 255 - a satin one (taken as rough
+        // up to a share of a half they came out matte, #2067; smooth from 4 %, a body meant
+        // to mirror barely shone like glass against the light, #2474), and where the mask
+        // says nothing reflects - a tyre or a seal - the rough rubber or plastic it is.
+        let coat_rough = clamp(0.06 + (0.087 - refl) * 11.9, 0.06, 0.8);
         // Where the model says how much it mirrors - a [matl_envmap_mask], or the texture's
         // alpha under a [matl_transmap] (most mod bodies) - Omsi.exe lays the sphere map
         // over the paint by that share at every angle (shader.wgsl's environment stage):
@@ -720,13 +723,16 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
         // night, and less where the saloon lamps light the surface already. (As an emission
         // at 0.6 of the texture by day and on top of the lamps at night, a switched-on
         // cabin's light-mapped parts were flat white.)
-        let lm = textureSample(t_light, s_diffuse, buv).rgb;
-        let night = clamp(camera.sun_color.w, 0.0, 1.0);
-        let left = (vec3<f32>(1.0) - clamp(cabin_light, vec3<f32>(0.0), vec3<f32>(1.0))) * (0.12 + 0.88 * night);
-        let w = lm * left * clamp(in.params2.x, 0.0, 1.0);
+        let lm = textureSample(t_light, s_diffuse, buv).rgb * clamp(in.params2.x, 0.0, 1.0);
         if (material.emissive.w < -1.5) {
-            emit = emit + tex.rgb * w * max(enh.exposure.z * 2.0, 0.6);
+            let night = clamp(camera.sun_color.w, 0.0, 1.0);
+            let left = (vec3<f32>(1.0) - clamp(cabin_light, vec3<f32>(0.0), vec3<f32>(1.0))) * (0.12 + 0.88 * night);
+            emit = emit + tex.rgb * lm * left * max(enh.exposure.z * 2.0, 0.6);
         } else {
+            // (By day as by night: ADDSMOOTH lifts the surface to its texture's colour by the
+            // map whatever light it has, and what the light already gives - the day's, the
+            // saloon lamps' - is taken off below. Lifted by an eighth of that by day, a
+            // display in the cab's shade was far darker than in Vanilla+, #2051.)
             // ... and as there it lifts the surface to its texture's own colour at the
             // most, shown as a display is (see the unlit path): taken as a light of the
             // night's level on top, a white light map (`weiss.bmp`, laid on a display so
@@ -735,7 +741,7 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
             // light map stays as it was: its dots are meant to burn above their colour.)
             // The map's script variable controls its backlight. Dimming every light-mapped
             // surface as a cab screen hid instrument backlights even with the lights on.
-            emit = emit + max(display_level(tex.rgb) * enh.exposure.y - rgb, vec3<f32>(0.0)) * w;
+            emit = emit + max(display_level(tex.rgb) * enh.exposure.y - rgb, vec3<f32>(0.0)) * lm;
         }
     }
     if (material.emissive.w < -1.5) {

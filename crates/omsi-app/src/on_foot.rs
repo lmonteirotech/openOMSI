@@ -691,7 +691,8 @@ impl App {
     /// The keys on foot (and Ctrl+Shift+G at the wheel); true when the key was taken.
     pub(crate) fn foot_key(&mut self, code: KeyCode, pressed: bool, repeat: bool, ctrl: bool, shift: bool) -> bool {
         if self.session.on_foot.is_none() {
-            if pressed && !repeat && code == KeyCode::KeyG && ctrl && shift && self.player.is_some() {
+            // (not where the player bound Ctrl+Shift+G to something, #2478)
+            if pressed && !repeat && code == KeyCode::KeyG && ctrl && shift && self.player.is_some() && !self.chord_bound(code, shift, ctrl, false) {
                 self.get_up();
                 return true;
             }

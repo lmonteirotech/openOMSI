@@ -965,8 +965,14 @@ mod tests {
 /// How loud a sound `dist` metres away arrives, with `range` its `[3d]` reference distance:
 /// Omsi.exe multiplies the volume by `min(range / distance, 1)` itself (`TSound` update
 /// 0x7509fe) - full up to the range, then 1/d (6 dB per doubling); a range of 0 is silent
-/// anywhere but at the very spot.
+/// anywhere but at the very spot. A sound at no real place (a vehicle whose position has
+/// gone to NaN or infinity for a frame) is not heard: `min` passes over a NaN, and such a
+/// sound was played as if at the listener's ear - an AI car's engine at full volume, a
+/// loud burst while the car flickered out of sight (#2416).
 pub fn distance_gain(range: f32, dist: f32) -> f32 {
+    if !dist.is_finite() {
+        return 0.0;
+    }
     if dist <= 0.0 {
         return 1.0;
     }
@@ -1004,6 +1010,8 @@ mod distance_tests {
         assert!((super::distance_gain(2.0, 4.0) - 0.5).abs() < 1e-6);
         assert!((super::distance_gain(1.0, 10.0) - 0.1).abs() < 1e-6);
         assert_eq!(super::distance_gain(0.0, 3.0), 0.0, "a range of 0");
+        assert_eq!(super::distance_gain(5.0, f32::NAN), 0.0, "nowhere: not heard");
+        assert_eq!(super::distance_gain(5.0, f32::INFINITY), 0.0);
     }
 
     #[test]

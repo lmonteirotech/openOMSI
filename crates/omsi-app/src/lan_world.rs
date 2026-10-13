@@ -956,6 +956,7 @@ impl Mirror {
                 scheme,
                 line,
                 destination,
+                paint,
                 ..
             }) = m.descs.get(&(false, id)).cloned()
             else {
@@ -992,11 +993,18 @@ impl Mirror {
             let Some(first) = m.cars[&id].samples.last().map(|s| s.v) else {
                 continue;
             };
+            // the repaint by its name: the index counts the host's repaints, and this game
+            // may have others installed (#2018); one it does not have is not guessed at
+            let scheme = if paint.is_empty() {
+                scheme.map(|s| s as usize)
+            } else {
+                ty.paint_schemes.iter().position(|p| p.name.trim().eq_ignore_ascii_case(&paint))
+            };
             t.add_mirror_car(
                 world,
                 id as u64,
-                ty,
-                scheme.map(|s| s as usize),
+                ty.clone(),
+                scheme,
                 scheduled,
                 DVec3::new(first.x, first.y, first.z),
                 first.heading as f64,
@@ -1450,6 +1458,7 @@ fn describe_car(args: &LanConfig, c: &crate::traffic::AiCar) -> Desc {
         scheme: c.scheme.map(|s| s.min(255) as u8),
         line,
         destination,
+        paint: c.scheme.and_then(|s| c.vehicle.ty.paint_schemes.get(s)).map(|p| p.name.clone()).unwrap_or_default(),
     }
 }
 

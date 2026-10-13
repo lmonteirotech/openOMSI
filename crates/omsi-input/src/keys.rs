@@ -119,9 +119,51 @@ pub fn dik_code(key: KeyCode) -> Option<i32> {
     })
 }
 
+/// OMSI's own codes for a modifier key of either side (`Inputs/ENG.kyb`: 90 "Shift (both)",
+/// 91 "Ctrl (both)", 92 "Alt (both)"; the stock keyboard.cfg puts `open_menue`, the quick
+/// menu, on 92): the one a Shift, Ctrl or Alt key also is.
+pub fn both_code(key: KeyCode) -> Option<i32> {
+    use KeyCode::*;
+    match key {
+        ShiftLeft | ShiftRight => Some(SHIFT_BOTH),
+        ControlLeft | ControlRight => Some(CTRL_BOTH),
+        AltLeft | AltRight => Some(ALT_BOTH),
+        _ => None,
+    }
+}
+
+/// The mouse's side buttons, Mouse 4 (back) and Mouse 5 (forward), as keyboard.cfg keys: codes
+/// past DirectInput's 0..255, which OMSI never writes (#2281).
+pub const MOUSE_4: i32 = 1004;
+pub const MOUSE_5: i32 = 1005;
+
+/// "Shift (both)", "Ctrl (both)", "Alt (both)": see [`both_code`].
+pub const SHIFT_BOTH: i32 = 90;
+pub const CTRL_BOTH: i32 = 91;
+pub const ALT_BOTH: i32 = 92;
+
+/// The chord bit (`KEY_SHIFT`, `KEY_CTRL`, `KEY_ALT`) of a modifier key, 0 for any other key.
+pub fn own_modifier_bit(key: KeyCode) -> i32 {
+    use omsi_content::input::{KEY_ALT, KEY_CTRL, KEY_SHIFT};
+    match both_code(key) {
+        Some(SHIFT_BOTH) => KEY_SHIFT,
+        Some(CTRL_BOTH) => KEY_CTRL,
+        Some(ALT_BOTH) => KEY_ALT,
+        _ => 0,
+    }
+}
+
 /// A readable name for a DIK scan code ("W", "Num8", "Up", "F5"), from the same table.
 pub fn scan_name(scan: i32) -> Option<String> {
     use KeyCode::*;
+    match scan {
+        SHIFT_BOTH => return Some("Shift".into()),
+        CTRL_BOTH => return Some("Ctrl".into()),
+        ALT_BOTH => return Some("Alt".into()),
+        MOUSE_4 => return Some("Mouse 4".into()),
+        MOUSE_5 => return Some("Mouse 5".into()),
+        _ => {}
+    }
     const ALL: &[KeyCode] = &[
         Escape, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9, Digit0, Minus, Equal, Backspace, Tab, KeyQ, KeyW, KeyE, KeyR, KeyT, KeyY, KeyU, KeyI, KeyO, KeyP, BracketLeft, BracketRight, Enter, ControlLeft, KeyA, KeyS, KeyD, KeyF, KeyG, KeyH, KeyJ, KeyK, KeyL, Semicolon, Quote, Backquote, ShiftLeft, Backslash, KeyZ, KeyX, KeyC, KeyV, KeyB, KeyN, KeyM, Comma, Period, Slash, ShiftRight, NumpadMultiply, AltLeft, Space, CapsLock, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, NumLock, ScrollLock, Numpad7, Numpad8, Numpad9, NumpadSubtract, Numpad4, Numpad5, Numpad6, NumpadAdd, Numpad1, Numpad2, Numpad3, Numpad0, NumpadDecimal, IntlBackslash, F11, F12, F13, F14, F15, NumpadEqual, NumpadEnter, ControlRight, NumpadDivide, PrintScreen, AltRight, Pause, Home, ArrowUp, PageUp, ArrowLeft, ArrowRight, End, ArrowDown, PageDown, Insert, Delete, SuperLeft, SuperRight, ContextMenu,
     ];
@@ -148,6 +190,20 @@ mod scan_name_tests {
         assert_eq!(super::scan_name(72).as_deref(), Some("Num8"));
         assert_eq!(super::scan_name(200).as_deref(), Some("Up"));
         assert_eq!(super::scan_name(52).as_deref(), Some("."));
+        assert_eq!(super::scan_name(92).as_deref(), Some("Alt"));
+    }
+
+    /// OMSI's "Alt (both)" and the rest: either side's key is it (#2392, #2003).
+    #[test]
+    fn both_sides_of_a_modifier() {
+        use winit::keyboard::KeyCode::*;
+        assert_eq!(super::both_code(AltLeft), Some(92));
+        assert_eq!(super::both_code(AltRight), Some(92));
+        assert_eq!(super::both_code(ShiftRight), Some(90));
+        assert_eq!(super::both_code(ControlLeft), Some(91));
+        assert_eq!(super::both_code(KeyA), None);
+        assert_eq!(super::own_modifier_bit(ShiftLeft), omsi_content::input::KEY_SHIFT);
+        assert_eq!(super::own_modifier_bit(KeyA), 0);
     }
 }
 

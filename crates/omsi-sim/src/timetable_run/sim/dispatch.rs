@@ -180,6 +180,28 @@ impl ScheduleSim {
         station_targets(self.data.trips.iter().map(|t| (trip_stations(t), t.terminus.trim().to_string())), name_of)
     }
 
+    /// Per bus stop object, the stop objects the trips leaving it go on to, by their
+    /// timetable name: the very stations whose passengers' exit weight Omsi.exe gives a
+    /// destination (0x61a068: the trip's station record), not just any object of that name.
+    pub fn stop_target_objects(&self) -> HashMap<i64, HashMap<String, Vec<i64>>> {
+        let names = self.stop_names();
+        let name_of = |id: i64| names.get(&id).cloned().unwrap_or_else(|| id.to_string());
+        let mut out: HashMap<i64, HashMap<String, Vec<i64>>> = HashMap::new();
+        for t in &self.data.trips {
+            let stations = trip_stations(t);
+            for (k, from) in stations.iter().enumerate() {
+                let targets = out.entry(*from).or_default();
+                for to in &stations[k + 1..] {
+                    let ids = targets.entry(name_of(*to)).or_default();
+                    if !ids.contains(to) {
+                        ids.push(*to);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The name each bus stop object has in the timetable (`Busstops.cfg`, the first entry
     /// of an object id): what [`Schedule::stop_targets`] calls it. The map object's own
     /// label can read otherwise (renamed in the editor, another code page than the tiles').

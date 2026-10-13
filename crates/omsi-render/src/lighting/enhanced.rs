@@ -327,7 +327,9 @@ pub(crate) fn headlamp_profile(t: Vec3, dir: Vec3, low: bool) -> f32 {
     }
     let across = (t.x * fwd.y - t.y * fwd.x).abs() / ahead;
     let wide = 0.12 * atmosphere::smoothstep(1.0, 0.45, across) + 0.88 * (-across * across / 0.06).exp();
-    let drop = -t.z / t.truncate().length().max(1e-3);
+    // (about the horizon of the vehicle's floor, which `dir` lies in: see `lamp_air.wgsl`)
+    let (rise, tilt) = (t.z / t.truncate().length().max(1e-3), dir.z / dir.truncate().length().max(1e-3));
+    let drop = (tilt - rise) / (1.0 + rise * tilt).max(1e-3);
     let mut up = (0.06 / drop.abs().max(1e-4)).powf(3.4).min(1.0);
     if low {
         up *= atmosphere::smoothstep(-0.012, 0.025, drop);
@@ -861,3 +863,28 @@ pub(crate) const SUN_RADIUS: f32 = 0.00465;
 /// The moon's, as drawn (the real one is as large as the sun's; a little more, as the
 /// eye sees it).
 pub(crate) const MOON_RADIUS: f32 = 0.0062;
+
+#[cfg(test)]
+mod beam_tests {
+    use super::headlamp_profile;
+    use glam::Vec3;
+
+    /// Up a ramp the low beam lights the road along the ramp as it lit the level road (#1897):
+    /// its cut-off is the vehicle's floor, not the world's horizon.
+    #[test]
+    fn a_low_beam_lights_a_ramp_as_the_level_road() {
+        let level = Vec3::Y;
+        let p = 8f32.to_radians();
+        let pitched = Vec3::new(0.0, p.cos(), p.sin());
+        for (ahead, down) in [(10.0f32, 1.0f32), (30.0, 1.0), (5.0, 0.5)] {
+            let flat = headlamp_profile(Vec3::new(0.0, ahead, -down).normalize(), level, true);
+            // the same point on a road rising at the bus's pitch, seen from the pitched lamp
+            let t = (pitched * ahead + Vec3::new(0.0, -p.sin(), p.cos()) * -down).normalize();
+            let ramp = headlamp_profile(t, pitched, true);
+            assert!((flat - ramp).abs() < 1e-3 * flat.max(1.0), "{ahead} m: {flat} level, {ramp} on the ramp");
+            assert!(flat > 0.1);
+        }
+        // above the floor's horizon the low beam is cut off either way
+        assert!(headlamp_profile((pitched * 30.0 + Vec3::new(0.0, -p.sin(), p.cos()) * 1.0).normalize(), pitched, true) < 0.05);
+    }
+}

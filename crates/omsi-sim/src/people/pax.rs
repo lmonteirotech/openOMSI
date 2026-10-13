@@ -265,7 +265,13 @@ impl Pax {
             return false;
         }
         let distance = (bus_pos - stop.pos).length();
-        if self.stop_request_at.is_none_or(|(id, _)| id != stop.id) {
+        // (another object of their stop - its other platform, which the bus without a
+        // timetable takes for the next stop once it is the nearer one - keeps the point
+        // chosen: drawn again from there, it came a few metres before the stop, #2346)
+        if let Some((_, m)) = self.stop_request_at.filter(|(id, _)| *id != stop.id) {
+            self.stop_request_at = Some((stop.id, m));
+        }
+        if self.stop_request_at.is_none() {
             if !departing {
                 return false;
             }

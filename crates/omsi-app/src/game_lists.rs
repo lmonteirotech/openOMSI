@@ -38,6 +38,8 @@ pub(crate) enum ListKind {
     Tours(String, Option<(String, usize, usize)>),
     Drivers,
     Numbers,
+    /// The vehicles placed in the world, to take the wheel of one of them (#2026).
+    SwitchTo,
     /// The termini of the bus's depot file, for its destination display.
     Destinations,
     /// The route numbers (lines) for the destination display: the depot file's and the
@@ -305,6 +307,24 @@ fn liveries(def: &omsi_vehicle::Vehicle) -> Vec<String> {
     let mut names: Vec<String> = model.ctc.iter().flat_map(|c| omsi_sim::vehicle::load_paint_schemes(&omsi_cfg::resolve_path(def.dir(), &c.path))).map(|s| s.name).collect();
     names.dedup();
     names
+}
+
+/// A seed that differs from call to call (the random livery).
+fn fresh_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.finish()
+}
+
+/// One of `items`, chosen by `seed` (None for none).
+fn pick_random<T>(items: &[T], seed: u64) -> Option<&T> {
+    // (splitmix64: neighbouring seeds land far apart)
+    let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    (!items.is_empty()).then(|| &items[(z % items.len() as u64) as usize])
 }
 
 /// A depot file's name for the lists: its `[name]`, and the file.
@@ -655,6 +675,32 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
                 }
             }
         }
+        ListKind::SwitchTo => {
+            // (the nearest first; the line's action is its place in `placed`)
+            let here = app.player.as_ref().map(|p| p.vehicle.position).or_else(|| app.camera.as_ref().map(|c| c.position));
+            let mut rows: Vec<(f64, String, String)> = app
+                .session
+                .placed
+                .iter()
+                .enumerate()
+                .map(|(k, q)| {
+                    let def = &q.vehicle.ty.def;
+                    let name = format!("{} {}", def.manufacturer.trim(), def.type_name.trim()).trim().to_string();
+                    let number = q.vehicle.ty.program.str_var("number").and_then(|i| q.vehicle.state.str_vars.get(i as usize)).map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+                    let dist = here.map(|h| (q.vehicle.position - h).truncate().length()).unwrap_or(0.0);
+                    let label = match number {
+                        Some(n) => format!("{name}  |  {n}  |  {}", crate::units::Units::now().distance(dist)),
+                        None => format!("{name}  |  {}", crate::units::Units::now().distance(dist)),
+                    };
+                    (dist, label, format!("switchto {k}"))
+                })
+                .collect();
+            rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+            out.extend(rows.into_iter().map(|(_, l, a)| (l, a)));
+            if out.is_empty() {
+                out.push((tr("There is no other vehicle to drive"), "back".into()));
+            }
+        }
         ListKind::Numbers => {
             if let Some(p) = app.player.as_ref() {
                 let mut numbers = fleet_numbers(&p.vehicle);
@@ -788,6 +834,7 @@ pub(crate) fn menu_extras(
         }
         ListKind::Drivers => (MenuKind::List, head("Driver..."), None),
         ListKind::Numbers => (MenuKind::List, head("Fleet number..."), None),
+        ListKind::SwitchTo => (MenuKind::List, head("Drive another vehicle..."), None),
         ListKind::Destinations => (MenuKind::List, head("Destination display..."), None),
         ListKind::RouteNumbers => (MenuKind::List, Some((tr("Route number"), String::new())), None),
         ListKind::Hofs => (MenuKind::List, head("Depot file (HOF)..."), None),
@@ -1001,7 +1048,13 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
         ListKind::PlaceMaker | ListKind::PlaceType(_) => Some(ListKind::PlaceLivery(arg.to_string())),
         ListKind::PlaceLivery(bus) => Some(ListKind::PlaceHof(bus.clone(), arg.to_string())),
         ListKind::PlaceHof(bus, paint) => {
-            let (bus, paint, hof) = (bus.clone(), paint.clone(), arg.trim().to_string());
+            let (bus, mut paint, hof) = (bus.clone(), paint.clone(), arg.trim().to_string());
+            // "Random livery": one of the bus's liveries, drawn now (#2410: no livery asked
+            // for gave the model's own textures every time)
+            if paint.trim().is_empty() {
+                let names = bus_def(app, &bus).map(|d| liveries(&d)).unwrap_or_default();
+                paint = pick_random(&names, fresh_seed()).cloned().unwrap_or_default();
+            }
             app.close_game_menu();
             app.place_vehicle(&bus, Some(paint).filter(|p| !p.is_empty()), Some(hof).filter(|h| !h.is_empty()));
             None
@@ -1039,6 +1092,13 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             }
             None
         }
+        ListKind::SwitchTo => {
+            if let Ok(k) = arg.trim().parse::<usize>() {
+                app.close_game_menu();
+                app.switch_vehicle_to(k);
+            }
+            None
+        }
         ListKind::Numbers => {
             if let (Some((n, reg)), Some(p)) = (arg.split_once('\u{1}'), app.player.as_mut()) {
                 let v = &mut p.vehicle;
@@ -1071,6 +1131,19 @@ pub(crate) use duty::*;
 
 #[cfg(test)]
 mod tests {
+    /// "Random livery" draws among all liveries (#2410: it always gave the same one).
+    #[test]
+    fn random_livery_reaches_every_livery() {
+        let names = ["A", "B", "C", "D"];
+        let mut seen = std::collections::HashSet::new();
+        for seed in 0..64u64 {
+            seen.insert(*super::pick_random(&names, seed).unwrap());
+        }
+        assert_eq!(seen.len(), 4);
+        assert!(super::pick_random::<&str>(&[], 7).is_none());
+        assert_ne!(super::fresh_seed(), super::fresh_seed());
+    }
+
     /// The start points as OMSI lists them: a name once (Gerolstein's ten depot places of
     /// one name are one line), its places in global.cfg's order, the names in OMSI's order.
     #[test]

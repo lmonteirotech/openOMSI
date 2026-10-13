@@ -70,6 +70,9 @@ pub struct TrailerPart {
     pub(super) v_alpha: Option<omsi_script::VarId>,
     pub(super) v_beta: Option<omsi_script::VarId>,
     pub(super) odometer: f32,
+    /// Placed by another game (a LAN player's rear section, `set_remote_pose`): it stays
+    /// where that game has it, and is not walked on behind its coupling here.
+    pub(super) remote: bool,
     pub reversed: bool,
     /// Per axle of this part: tyre radius less the unloaded hub height, the static load per
     /// wheel and the spring rate - it sits down on its springs like the part it follows.
@@ -309,6 +312,7 @@ impl TrailerPart {
             first_axle,
             wheel_radius,
             odometer: 0.0,
+            remote: false,
             reversed,
             text_textures: Vec::new(),
             axle_ids: AxleVarIds::default(),
@@ -428,6 +432,7 @@ impl TrailerPart {
         let rise = coupling.z - (position.z + self.coupling_front.z as f64);
         self.pitch = (rise.atan2(ahead).to_degrees() as f32).clamp(-20.0, 20.0);
         self.set_pose(position, heading);
+        self.remote = true;
     }
 
     /// Forget where this part was: the next step puts it straight behind the leading part
@@ -466,6 +471,16 @@ impl TrailerPart {
 
     pub(super) fn update(&mut self, main: &mut VehicleInstance, dt: f32, lead: Option<(DVec3, Mat4, f64)>) {
         self.axle_ids.refresh(main, self.first_axle, self.axle_count.max(self.rest.len()));
+        if self.remote {
+            // Another game's rear section stands where that game says, leaning onto the
+            // coupling (`set_remote_pose`). Walked on behind the coupling here as well, it
+            // took the ground under it in this game and lost the lean, and the gap between
+            // its pose and our copy of the front moved its axle every frame: its wheels
+            // turned on a bus that stood still (#1177). Its wheels roll with the bus.
+            self.odometer += main.physics.speed * dt;
+            self.update_visuals_only(main, dt, lead);
+            return;
+        }
         // coupling point in the world: on the leading part (the vehicle or the previous trailer)
         let (lead_pos, lead_rot, lead_heading) =
             lead.unwrap_or((main.position, main.body_rotation(), main.heading));

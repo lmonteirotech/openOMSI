@@ -490,3 +490,17 @@ fn a_route_in_front_of_the_terminus_is_not_part_of_its_name() {
         assert_ne!(at_stop(2, &test_stop("Apsley Station", ""), Some(shown), &Takes::Terminus), AtStop::Empties, "{shown}");
     }
 }
+
+#[test]
+fn the_other_platform_of_the_stop_keeps_the_request_point() {
+    let stop = request_stop();
+    let mut rider = Pax::new(1.1, 0.5);
+    rider.dest = Some(stop.name.clone());
+    assert!(!rider.wants_stop_at(&stop, DVec3::Y * 1000.0, true));
+    let point = rider.stop_request_at.unwrap().1;
+    // nearer now, the bus takes the stop's other object (same name) for the next stop
+    let other = RequestStop { id: 43, pos: stop.pos + DVec3::X * 20.0, ..stop.clone() };
+    assert!(!rider.wants_stop_at(&other, DVec3::Y * (point + 10.0), true));
+    assert_eq!(rider.stop_request_at, Some((43, point)));
+    assert!(rider.wants_stop_at(&other, DVec3::Y * (point - 10.0), true));
+}

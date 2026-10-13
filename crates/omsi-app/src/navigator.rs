@@ -288,6 +288,8 @@ pub struct Navigator {
     /// The current small-map texture in Scene::overlays, for the cockpit display.
     pub panel_overlay: Option<usize>,
     pub cockpit_display: bool,
+    /// The speed limit (km/h) the top bar showed last, for the information bar (#2476).
+    pub(crate) speed_limit: Option<f32>,
     drawn_at: f32,
     /// Frames since the last drawing (see `NAV_REDRAW_FRAMES`).
     frames_since_drawn: u32,
@@ -436,6 +438,7 @@ impl Navigator {
         Navigator {
             panel_overlay: None,
             cockpit_display: false,
+            speed_limit: None,
             drawn_at: f32::MIN,
             frames_since_drawn: u32::MAX,
             enabled,
@@ -1321,6 +1324,7 @@ impl Navigator {
             let v = n.lanes.get(lane)?.speed_limit_kmh;
             (v > 1.0 && v < 200.0).then_some(v)
         });
+        self.speed_limit = limit;
         if let Some(v) = limit {
             x += 10.0 * s;
             let c = Vec2::new(x + 10.0 * s, top.center().y);

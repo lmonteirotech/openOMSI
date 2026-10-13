@@ -152,6 +152,36 @@ fn parse_stations(text: &str) -> (Vec<(String, String)>, Option<f32>, Frequencie
     (stations, volume, frequencies)
 }
 
+/// The radio's volume (0..1) a tenth up or down, on the tenths.
+fn step_volume(v: f32, up: bool) -> f32 {
+    ((v * 10.0).round() + if up { 1.0 } else { -1.0 }).clamp(0.0, 10.0) / 10.0
+}
+
+/// radio.cfg's text with its `volume` line set to `v` (the first one; one put at the top
+/// where it has none), the rest as it was.
+fn with_volume(text: &str, v: f32) -> String {
+    let line = format!("volume = {v:.1}");
+    let mut done = false;
+    let mut out: Vec<String> = text
+        .lines()
+        .map(|l| {
+            let is_volume = !l.trim_start().starts_with('#') && l.split_once('=').is_some_and(|(n, _)| n.trim().trim_start_matches('\u{feff}').eq_ignore_ascii_case("volume"));
+            if is_volume && !done {
+                done = true;
+                line.clone()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    if !done {
+        out.insert(0, line);
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
+}
+
 /// A map's own stations: `radio.cfg` beside its global.cfg, written like the player's -
 /// the stations a bus hears where the map plays, and the frequencies they are on there.
 /// Its volume line counts for nothing: how loud the radio is stays the player's business.
@@ -478,6 +508,35 @@ impl Radio {
         }
     }
 
+    /// The station before on every button (`radio_previous`, #1293).
+    pub fn previous_station(&mut self) -> String {
+        if self.stations.is_empty() {
+            return "No radio stations (see ~/.openomsi/radio.cfg)".into();
+        }
+        let n = self.stations.len();
+        self.offset = (self.offset + n - 1) % n;
+        match &self.playing {
+            Some(p) => {
+                let before = (p.station + n - 1) % n;
+                format!("Radio {}: {}", before + 1, self.stations[before].0)
+            }
+            None => "The bus radio is off (switch it on in the cockpit)".into(),
+        }
+    }
+
+    /// The radio's own volume a tenth up or down (`radio_volume_up` / `_down`, #1293, #1462),
+    /// kept in radio.cfg's `volume` line; the bus's own volume knob still goes on top.
+    pub fn step_volume(&mut self, up: bool) -> String {
+        self.volume = step_volume(self.volume, up);
+        if let Some(path) = config_path() {
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|_| default_text());
+            if let Err(e) = std::fs::write(&path, with_volume(&text, self.volume)) {
+                log::warn!("radio: the volume could not be kept in {}: {e}", path.display());
+            }
+        }
+        format!("Radio volume {:.0} %", self.volume * 100.0)
+    }
+
     pub fn stop(&mut self, audio: &AudioEngine) {
         if let Some(p) = self.playing.take() {
             p.buf.close();
@@ -490,6 +549,19 @@ impl Radio {
 mod tests {
     use super::*;
     use omsi_cfg::radio::{station_lines, with_stations};
+
+    /// The volume keys step by tenths within 0..1 and keep the file's other lines (#1293).
+    #[test]
+    fn the_volume_keys_step_and_are_kept() {
+        assert_eq!(step_volume(0.7, true), 0.8);
+        assert_eq!(step_volume(0.95, true), 1.0);
+        assert_eq!(step_volume(1.0, true), 1.0);
+        assert_eq!(step_volume(0.05, false), 0.0);
+        let text = "# mine\nvolume = 0.4\nOne = https://a.example/one.mp3\n";
+        assert_eq!(with_volume(text, 0.5), "# mine\nvolume = 0.5\nOne = https://a.example/one.mp3\n");
+        assert_eq!(with_volume("One = x\n", 0.3), "volume = 0.3\nOne = x\n");
+        assert_eq!(parse_stations(&with_volume(text, 0.9)).1, Some(0.9));
+    }
 
     #[test]
     fn a_station_list_edited_keeps_the_files_comments_volume_and_frequencies() {

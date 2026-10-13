@@ -6,8 +6,8 @@ import { S, useStore, set, toast } from '../store.js';
 import { t, hhmm, longDate, language } from '../i18n.js';
 import { call, contentUrl } from '../api.js';
 import { Icon } from '../icons.js';
-import { Button, Card, Field, Select, Input, Toggle, Segmented, Slider, Picture, Notice, Spinner, PageHead, Tag, Search } from '../ui.js';
-import { choose, curMap, curBus, curLine, curTour, pickedTrip, realTime, realDate, start, loadSituations, duty, weatherName, weatherOfItsOwn, mapName, askJoined, noServerBus } from '../data.js';
+import { Button, Card, Field, Select, Input, Toggle, Segmented, Slider, Picture, Notice, Spinner, PageHead, Tag, Search, Dialog } from '../ui.js';
+import { choose, curMap, curBus, curLine, curTour, pickedTrip, realTime, realDate, start, loadSituations, duty, weatherName, weatherOfItsOwn, mapName, askJoined, noServerBus, busFile } from '../data.js';
 import { MapPicker } from './map-picker.js';
 import { BusPicker } from './bus-picker.js';
 import { BusPreview } from '../preview.js';
@@ -24,6 +24,10 @@ export const depotRun = (x) => !x.line?.trim() || /betriebsfahrt|leerfahrt|diens
 
 /** The trip a start at `now` (seconds) takes: the one under way or the next. */
 export function tripAt(tour, now) {
+  // a night tour's times run on past 24:00: at 03:25, before the tour's first trip of the
+  // day, its trip of 27:30 is the one at 03:30 (the tour begun the evening before, #2166)
+  const n = tour.trips.length;
+  if (n && now < 86400 && tour.trips[0].departure > now && tour.trips[n - 1].departure >= now + 86400 - 120) now += 86400;
   const i = tour.trips.findIndex((x) => x.departure >= now - 120);
   return i >= 0 ? i : tour.trips.length ? tour.trips.length - 1 : -1;
 }
@@ -106,6 +110,36 @@ export function DrivePage() {
   `;
 }
 
+// the player's notes on maps and buses (#1791): read once, saved as they are typed
+let notesNow = null;
+const noteKey = (kind, file) => `${kind}:${(file || '').replace(/\\/g, '/').toLowerCase()}`;
+
+/** A note of the player's own on a map or a bus, kept on this computer. */
+export function Notes({ kind, file }) {
+  const key = noteKey(kind, file);
+  const [text, setText] = useState(notesNow?.[key] || '');
+  const [open, setOpen] = useState(!!notesNow?.[key]);
+  const timer = useRef(0);
+  useEffect(() => {
+    let alive = true;
+    const show = (all) => alive && (setText(all[key] || ''), setOpen(!!all[key]));
+    if (notesNow) show(notesNow);
+    else call('notes_get').then((all) => ((notesNow = all || {}), show(notesNow)), () => {});
+    return () => {
+      alive = false;
+    };
+  }, [key]);
+  const save = (v) => {
+    setText(v);
+    if (notesNow) notesNow[key] = v;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => call('notes_save', { key, text: v }).catch(() => {}), 600);
+  };
+  if (!file) return null;
+  if (!open) return html`<div><${Button} small kind="ghost" icon="file" label="Add a note" onClick=${() => setOpen(true)} /></div>`;
+  return html`<textarea class="input" rows="3" style="width:100%" placeholder=${t('Your own note, kept on this computer')} value=${text} onInput=${(e) => save(e.currentTarget.value)}></textarea>`;
+}
+
 function MapCard({ onPick }) {
   const s = useStore();
   const m = curMap();
@@ -129,6 +163,7 @@ function MapCard({ onPick }) {
               <h3>${m.friendly || m.name}</h3>
               <p>${m.description || ''}</p>
               <div class="row" style="margin-top:8px">${m.installed && html`<${Tag}>${t('Mod')}</${Tag}>`}<span class="muted small">${t('{n} entry points', { n: m.entry_points.length })}</span></div>
+              <div style="margin-top:8px"><${Notes} kind="map" file=${m.file} /></div>
             </div>
           </div>`}
   </${Card}>`;
@@ -204,6 +239,16 @@ function DutyCard() {
     if (on) el.scrollTop += on.getBoundingClientRect().top - el.getBoundingClientRect().top - 70;
   }, [tripKey]);
   const entries = m ? [[-1, c.free ? 'Automatic (the map\'s first)' : 'Automatic (nearest to the first stop)'], ...m.entry_points.map((e, i) => [i, e.name])] : [];
+  // the tours of every line that leave next from the chosen time (#1885)
+  const upcoming = useMemo(() => {
+    const out = [];
+    for (const l of lines) for (const x of l.tours) {
+      if (!x.runs) continue;
+      const trip = x.trips[tripAt(x, now)];
+      if (trip && trip.departure >= now - 120 && !depotRun(trip)) out.push({ l, x, trip });
+    }
+    return out.sort((a, b) => a.trip.departure - b.trip.departure).slice(0, 15);
+  }, [lines, now]);
 
   let body;
   if (c.free) {
@@ -263,7 +308,22 @@ function DutyCard() {
           </div>
         </div>
       </div>
-      ${tour && !tour.runs && html`<${Notice} kind="warn">${tour.next_run ? t('This tour does not run on the chosen date; it runs next on {date}.', { date: longDate(tour.next_run) }) : t('This tour does not run within a year of the chosen date.')}</${Notice}>`}
+      ${upcoming.length > 0 && html`<details class="next-tours">
+        <summary class="label" style="cursor:pointer">${t('Next departures from {time}', { time: hhmm(c.time) })}</summary>
+        <table class="table" style="margin-top:8px">
+          <tbody>
+            ${upcoming.map(({ l, x, trip }) => html`<tr class=${'click' + (l.name === c.line && x.number === c.tour ? ' on' : '')} onClick=${() => (choose({ line: l.name, tour: x.number, start_trip: null }), pickTrip(trip))}>
+              <td class="num"><b>${hms(trip.departure)}</b></td>
+              <td><span class="line-badge">${trip.line || l.name}</span></td>
+              <td>${t('Tour')} ${x.number}</td>
+              <td class="ellipsis" style="max-width:320px">${trip.from} → ${trip.terminus}</td>
+            </tr>`)}
+          </tbody>
+        </table>
+      </details>`}
+      ${tour && !tour.runs && html`<${Notice} kind="warn">${tour.next_run ? t('This tour does not run on the chosen date; it runs next on {date}.', { date: longDate(tour.next_run) }) : t('This tour does not run within a year of the chosen date.')}
+        ${tour.next_run && !realDate() && html`<div style="margin-top:8px"><${Button} small icon="calendar" label="Drive it on that day" onClick=${() => choose({ date: tour.next_run, season: 'auto', own_date: null })} /></div>`}</${Notice}>`}
+      ${tour && html`<${TourBus} tour=${tour} />`}
       ${tour && html`<div>
         <div class="row" style="margin-bottom:8px"><span class="label">${t('Trips of the tour')}</span><span class="muted small right">${t('Click a trip to start with it')}</span></div>
         <div class="trips" ref=${tripsRef}>
@@ -290,6 +350,38 @@ function DutyCard() {
   return html`<${Card} title="Duty" actions=${html`<${Segmented} value=${c.free ? 'free' : 'line'} options=${[['line', 'Timetable'], ['free', 'Free drive']]} onChange=${(v) => choose({ free: v === 'free' })} />`}>
     ${body}
   </${Card}>`;
+}
+
+/** The buses the map's ailists.cfg gives the tour's AI group, to drive one of them (#1886). */
+function TourBus({ tour }) {
+  const s = useStore();
+  const c = s.choice;
+  const [found, setFound] = useState([]);
+  useEffect(() => {
+    setFound([]);
+    if (!tour.ai_group || !c.map) return;
+    let alive = true;
+    call('tour_buses', { map: c.map, group: tour.ai_group, date: c.date }).then((r) => alive && setFound(r || []), () => {});
+    return () => (alive = false);
+  }, [c.map, c.date, tour.ai_group]);
+  const buses = found
+    .map((f) => {
+      const v = (s.vehicles || []).find((x) => busFile(x.file) === busFile(f.file));
+      if (!v) return null;
+      const paint = v.paints.includes(f.paint) ? f.paint : '';
+      const number = (v.numbers || []).some(([n]) => n === f.number) ? f.number : '';
+      return { v, paint, number };
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+  if (!buses.length) return null;
+  return html`<div class="row muted small" style="gap:6px;flex-wrap:wrap;align-items:center">
+    <span>${t('Buses the timetable gives this tour:')}</span>
+    ${buses.map(({ v, paint, number }) => {
+      const on = v.file === c.bus && (c.paint || '') === paint;
+      return html`<${Button} small kind=${on ? 'primary' : ''} icon=${on ? 'check' : 'bus'} label=${[v.name, paint].filter(Boolean).join(' - ')} onClick=${() => choose({ bus: v.file, paint, number, hof_manual: false })} />`;
+    })}
+  </div>`;
 }
 
 function ibisCodes(info, code, line) {
@@ -339,7 +431,57 @@ function TimeInput({ minutes, onChange, disabled }) {
     if (h >= 0 && h < 24 && mi >= 0 && mi < 60) onChange(h * 60 + mi);
     else setText(hhmm(minutes));
   };
-  return html`<input class="input num" value=${text} disabled=${disabled} maxlength="5" placeholder="09:00" onInput=${(e) => setText(e.currentTarget.value)} onBlur=${commit} onKeyDown=${(e) => e.key === 'Enter' && e.currentTarget.blur()} />`;
+  // the mouse wheel turns the clock: a minute over the minutes, an hour over the hours (#2351)
+  const wheel = (e) => {
+    if (disabled) return;
+    e.preventDefault();
+    const d = e.deltaY || e.deltaX;
+    if (!d) return;
+    const box = e.currentTarget.getBoundingClientRect();
+    const hours = e.shiftKey || e.clientX - box.left < Math.min(box.width / 2, 34);
+    const step = (d < 0 ? 1 : -1) * (hours ? 60 : 1);
+    onChange((((minutes + step) % 1440) + 1440) % 1440);
+  };
+  return html`<input class="input num" value=${text} disabled=${disabled} maxlength="5" placeholder="09:00" title=${t('The mouse wheel turns the hours (left) or the minutes (right)')} onWheel=${wheel} onInput=${(e) => setText(e.currentTarget.value)} onBlur=${commit} onKeyDown=${(e) => e.key === 'Enter' && e.currentTarget.blur()} />`;
+}
+
+/** A month to click a day in (#2351, #1625): the week starts on Monday, as the timetables'. */
+function DatePicker({ value, onPick, onClose }) {
+  const at = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
+  const [month, setMonth] = useState(() => (at ? new Date(Date.UTC(+at[1], +at[2] - 1, 1)) : new Date(Date.UTC(new Date().getFullYear(), new Date().getMonth(), 1))));
+  const y = month.getUTCFullYear();
+  const m = month.getUTCMonth();
+  const step = (n) => setMonth(new Date(Date.UTC(y, m + n, 1)));
+  const loc = language();
+  const title = new Intl.DateTimeFormat(loc, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(month);
+  const dayName = new Intl.DateTimeFormat(loc, { weekday: 'short', timeZone: 'UTC' });
+  // (2024-01-01 was a Monday)
+  const heads = [0, 1, 2, 3, 4, 5, 6].map((i) => dayName.format(new Date(Date.UTC(2024, 0, 1 + i))));
+  const lead = (month.getUTCDay() + 6) % 7;
+  const days = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const iso = (d) => new Date(Date.UTC(y, m, d)).toISOString().slice(0, 10);
+  const today = localNow().date;
+  const cell = 'height:34px;border-radius:6px;border:none;font:inherit;cursor:pointer;';
+  return html`<${Dialog} title="Choose a date" onClose=${onClose}>
+    <div class="stack" style="gap:10px;min-width:280px">
+      <div class="row" style="gap:6px;align-items:center">
+        <${Button} small kind="ghost" icon="left" title="Previous month" onClick=${() => step(-1)} />
+        <div class="grow" style="text-align:center;font-weight:600">${title}</div>
+        <${Button} small kind="ghost" icon="right" title="Next month" onClick=${() => step(1)} />
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center">
+        ${heads.map((h) => html`<div class="muted small">${h}</div>`)}
+        ${Array.from({ length: lead }, () => html`<div></div>`)}
+        ${Array.from({ length: days }, (_, i) => {
+          const d = iso(i + 1);
+          const on = d === value;
+          const bg = on ? 'background:var(--accent);color:#000;font-weight:600;' : 'background:var(--surface-2);color:var(--text);';
+          const ring = d === today && !on ? 'box-shadow:inset 0 0 0 1px var(--accent);' : '';
+          return html`<button type="button" style=${cell + bg + ring} onClick=${() => onPick(d)}>${i + 1}</button>`;
+        })}
+      </div>
+    </div>
+  </${Dialog}>`;
 }
 
 /** A date typed as the timetables write it (YYYY-MM-DD), whatever the system's locale. */
@@ -352,13 +494,23 @@ function DateInput({ value, onChange, disabled }) {
     if (d && d.getUTCMonth() === +m[2] - 1) onChange(d.toISOString().slice(0, 10));
     else setText(value);
   };
-  return html`<input class="input num" value=${text} disabled=${disabled} maxlength="10" placeholder="1989-05-30" onInput=${(e) => setText(e.currentTarget.value)} onBlur=${commit} onKeyDown=${(e) => e.key === 'Enter' && e.currentTarget.blur()} />`;
+  // the mouse wheel steps a day (#2351)
+  const wheel = (e) => {
+    if (disabled) return;
+    e.preventDefault();
+    const d = e.deltaY || e.deltaX;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
+    if (!d || !m) return;
+    onChange(new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + (d < 0 ? 1 : -1))).toISOString().slice(0, 10));
+  };
+  return html`<input class="input num" value=${text} disabled=${disabled} maxlength="10" placeholder="1989-05-30" onWheel=${wheel} onInput=${(e) => setText(e.currentTarget.value)} onBlur=${commit} onKeyDown=${(e) => e.key === 'Enter' && e.currentTarget.blur()} />`;
 }
 
 /** Start the tour at this trip: at its departure (or at the real time: the bus waits). */
 export function pickTrip(x) {
   const c = S.choice;
-  const time = realTime() ? c.time : Math.floor(x.departure / 60);
+  // (a trip after midnight of a night tour, 24:30, starts at 00:30)
+  const time = realTime() ? c.time : Math.floor(x.departure / 60) % (24 * 60);
   choose({ time, start_trip: [c.line, c.tour, x.index, time] });
 }
 
@@ -397,6 +549,7 @@ function TimeCard() {
   const metar = c.weather?.startsWith('metar:') ? c.weather.slice(6) || airport : airport;
   const [airports, setAirports] = useState([]);
   const [editing, setEditing] = useState(null);
+  const [picking, setPicking] = useState(false);
   const custom = isCustomWeather(c.weather);
   useEffect(() => {
     if (c.weather?.startsWith('metar:') && !airports.length) call('metar_airports').then(setAirports).catch(() => {});
@@ -431,6 +584,7 @@ function TimeCard() {
         <${Field} label="Date" help=${rd ? 'Today (Settings)' : null}>
           <div class="row" style="gap:6px">
             <div class="grow"><${DateInput} value=${c.date} disabled=${rd} onChange=${(date) => choose({ date, season: 'auto', own_date: null })} /></div>
+            ${!rd && html`<${Button} icon="down" title="Choose a date" onClick=${() => setPicking(true)} />`}
             ${!rd && html`<${Button} icon="calendar" title="Current date" onClick=${() => choose({ date: localNow().date, season: 'auto', own_date: null })} />`}
           </div>
         </${Field}>
@@ -446,6 +600,7 @@ function TimeCard() {
         </div>
       </${Field}>
       ${editing != null && html`<${WeatherEditor} from=${editing} onClose=${() => setEditing(null)} />`}
+      ${picking && html`<${DatePicker} value=${c.date} onClose=${() => setPicking(false)} onPick=${(date) => (setPicking(false), choose({ date, season: 'auto', own_date: null }))} />`}
       ${c.weather?.startsWith('metar:') && airports.length > 0 && html`<${Field} label="Airport">
         <${Select} raw value=${metar} options=${airports} onChange=${(code) => choose({ weather: `metar:${code}` })} />
       </${Field}>`}

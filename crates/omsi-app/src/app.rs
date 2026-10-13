@@ -798,6 +798,7 @@ impl App {
             }
             self.menus.loading.step(done as f32 / total.max(1) as f32, dt);
             self.menus.loading.title = name.trim().to_string();
+            ui.set_loading_map(&self.args.root, &self.args.map, (s.config.width, s.config.height));
             ui.loading(&renderer, &mut scene, s.config.width as f32, s.config.height as f32, scale, name.trim(), self.menus.loading.shown(), self.menus.loading.clock(), self.menus.loading.tip());
             let acquired = s.acquire();
             // a swapchain that no longer fits the window (Vulkan says so after the switch
@@ -957,6 +958,11 @@ pub(crate) struct CamBlend {
     /// What the glide's last picture was off from the plain camera by, let go of over a
     /// fraction of a second after the hand-over (so that nothing is left to jump).
     pub carry: Option<CamCarry>,
+    /// The zoom the picture has come to while it glides from the camera left's zoom to the
+    /// one taken's (each cab camera keeps its own, #2183; it jumped, #2306).
+    pub zoom_from: Option<f32>,
+    /// The zoom drawn last frame: where the next glide's zoom starts from.
+    pub zoom_drawn: Option<f32>,
 }
 
 /// A small difference between two pictures of the camera (world position, angles in degrees,

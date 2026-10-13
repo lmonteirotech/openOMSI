@@ -584,10 +584,13 @@ pub(crate) fn present_clear(surface: &mut SurfaceState<'_>, device: &wgpu::Devic
 }
 
 /// Tell the player why the game cannot go on, also where there is no window yet (a message
-/// box on Windows; the log and the terminal elsewhere).
+/// box on Windows, the desktop's own message dialog on Linux; the log and the terminal
+/// everywhere).
 pub(crate) fn fatal_message(text: &str) {
     log::error!("{text}");
     eprintln!("openOMSI: {text}");
+    #[cfg(target_os = "linux")]
+    linux_message(text);
     #[cfg(windows)]
     {
         use windows::core::PCWSTR;
@@ -596,6 +599,29 @@ pub(crate) fn fatal_message(text: &str) {
         let (t, c) = (wide(text), wide("openOMSI"));
         unsafe {
             MessageBoxW(None, PCWSTR(t.as_ptr()), PCWSTR(c.as_ptr()), MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
+/// Linux: the message in a dialog of the desktop (zenity on GNOME and SteamOS, kdialog on
+/// KDE, xmessage as the last resort) - started from a file manager or Steam nobody sees the
+/// terminal (#2458: a Steam Deck without WebKitGTK just did nothing). Not without a desktop,
+/// nor in a background run.
+#[cfg(target_os = "linux")]
+fn linux_message(text: &str) {
+    let desktop = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    if !desktop || std::env::var_os("OMSI_BACKGROUND").is_some_and(|v| !v.is_empty() && v != "0") {
+        return;
+    }
+    let tries: [(&str, Vec<&str>); 3] = [
+        ("zenity", vec!["--error", "--title=openOMSI", "--width=520", "--no-markup", "--text", text]),
+        ("kdialog", vec!["--title", "openOMSI", "--error", text]),
+        ("xmessage", vec!["-center", text]),
+    ];
+    for (program, args) in tries {
+        // (the first one that is there; it returns when the player closed it)
+        if std::process::Command::new(program).args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok() {
+            return;
         }
     }
 }

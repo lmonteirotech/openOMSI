@@ -112,6 +112,7 @@ pub(super) fn steps_of(verb: &str) -> Option<Vec<f32>> {
         "pedal_t" | "pedal_b" => PEDAL.to_vec(),
         "ctrl_deadzone" => (0..=30).map(|v| v as f32 * 0.01).collect(),
         "mouse_sens" => (10..=300).map(|v| v as f32 / 100.0).collect(),
+        "key_pedal_speed" => (5..=40).map(|v| v as f32 * 0.05).collect(),
         "mouse_pedal_strength" => (10..=40).map(|v| v as f32 * 0.05).collect(),
         "look_sens" => (2..=40).map(|v| v as f32 * 0.05).collect(),
         "look_smoothing_ms" => (0..=20).map(|v| v as f32 * 10.0).collect(),

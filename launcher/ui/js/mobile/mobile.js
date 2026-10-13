@@ -16,6 +16,7 @@ import { MultiplayerPage } from '../pages/multiplayer.js';
 import { ProfilePage } from '../pages/profile.js';
 import { ModsPage } from '../pages/mods.js';
 import { SettingsPage } from '../pages/settings.js';
+import { ControlsPage } from '../pages/controls.js';
 import { GamesPage } from '../pages/games.js';
 import { TutorialsPage } from '../pages/tutorials.js';
 import { SetupPage } from '../pages/setup.js';
@@ -31,12 +32,13 @@ const TABS = [
 
 export function MobileApp() {
   const s = useStore();
-  const page = TABS.some((x) => x[0] === s.page) || ['games', 'tutorials', 'setup'].includes(s.page) ? s.page : 'drive';
-  const Body = { drive: MobileDrive, multiplayer: MultiplayerPage, profile: ProfilePage, mods: ModsPage, settings: SettingsPage, more: More, games: GamesPage, tutorials: TutorialsPage, setup: SetupPage }[page];
+  // (the keys and the game controllers open from Settings, #2308: they fell back to Drive)
+  const page = TABS.some((x) => x[0] === s.page) || ['games', 'tutorials', 'setup', 'controls'].includes(s.page) ? s.page : 'drive';
+  const Body = { drive: MobileDrive, multiplayer: MultiplayerPage, profile: ProfilePage, mods: ModsPage, settings: SettingsPage, more: More, games: GamesPage, tutorials: TutorialsPage, setup: SetupPage, controls: ControlsPage }[page];
   const running = s.poll.instances?.length || 0;
   return html`<div class="m-shell">
     <nav class="m-rail">
-      ${TABS.map(([id, label, icon]) => html`<button class=${'m-tab' + (page === id || (id === 'more' && ['games', 'tutorials', 'setup'].includes(page)) ? ' on' : '')} onClick=${() => set({ page: id })}>
+      ${TABS.map(([id, label, icon]) => html`<button class=${'m-tab' + (page === id || (id === 'more' && ['games', 'tutorials', 'setup'].includes(page)) || (id === 'settings' && page === 'controls') ? ' on' : '')} onClick=${() => set({ page: id })}>
         <${Icon} name=${icon} size=${22} /><span>${t(label)}</span>${id === 'more' && running > 0 && html`<i class="m-dot"></i>`}
       </button>`)}
     </nav>

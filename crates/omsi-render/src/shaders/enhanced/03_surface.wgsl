@@ -81,7 +81,6 @@ var<private> rt_aux: vec4<f32>;
 fn fs_enhanced(in: FsIn) -> EnhancedOut {
     var puddle_weight = vec2<f32>(0.0);
     let c = shade_enhanced(in, &puddle_weight, false, camera.cam_pos.xyz);
-    if (BLEND_DEPTH && c.a == 0.0) { discard; }
     let screen = material.flags.x > 0.5;
     // an LED panel's dots stay in the glow's source (`post.wgsl`), the other screens'
     // letters stay out of it

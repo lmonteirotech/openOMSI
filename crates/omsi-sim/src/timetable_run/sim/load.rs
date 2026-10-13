@@ -64,7 +64,7 @@ impl ScheduleSim {
                         let profile = usize::try_from(t.profile)
                             .unwrap_or(0)
                             .min(times[ti].len() - 1);
-                        departures.push(Departure {
+                        let d = Departure {
                             time: t.departure as f64 * 60.0,
                             trip: ti,
                             profile,
@@ -73,12 +73,20 @@ impl ScheduleSim {
                             tour: tour.number.clone(),
                             mask,
                             spawned: false,
-                        });
+                            yesterday: false,
+                        };
+                        // (a trip after 24:00 runs in the early hours of the next day as
+                        // well: the night tour that began the evening before, #2166)
+                        if d.time >= DAY {
+                            departures.push(Departure { time: d.time - DAY, yesterday: true, line: d.line.clone(), ai_group: d.ai_group.clone(), tour: d.tour.clone(), ..d });
+                        }
+                        departures.push(d);
                     }
                 }
             }
         }
         departures.sort_by(|a, b| a.time.total_cmp(&b.time));
+        let night_twin = night_twins(&departures);
         let mut trip_departures = vec![Vec::new(); data.trips.len()];
         for (i, d) in departures.iter().enumerate() {
             trip_departures[d.trip].push(i);
@@ -88,7 +96,9 @@ impl ScheduleSim {
         let mut tour_prev = vec![None; departures.len()];
         let mut last_of: HashMap<(String, String), usize> = HashMap::new();
         for (i, d) in departures.iter().enumerate() {
-            let key = (d.line.clone(), d.tour.clone());
+            // (yesterday's night trips are a tour of their own: tonight's run on from the
+            // evening's trips)
+            let key = (d.line.clone(), if d.yesterday { format!("{}\u{1}", d.tour) } else { d.tour.clone() });
             tour_prev[i] = last_of.get(&key).copied();
             last_of.insert(key, i);
         }
@@ -258,6 +268,8 @@ impl ScheduleSim {
             calendar,
             day: date,
             day_bits: (day_bit, school_bit),
+            yesterday_bits: (0, 0),
+            night_twin,
             next_day_bit: 1 << ((clock.weekday() + 1) % 7),
             day_base: 0.0,
             date_clock: clock.clone(),
@@ -266,6 +278,7 @@ impl ScheduleSim {
             used_numbers: HashSet::new(),
             vehicle_seed: omsi_script::session_seed().map(|s| omsi_script::mix_seed(s ^ 0x746f_7572_5f62_7573)).unwrap_or(0),
         };
+        s.yesterday_bits = s.yesterday_bits();
         s.assign_car_use();
         s
     }
@@ -393,8 +406,45 @@ impl ScheduleSim {
 
     /// Whether departure `i`'s tour runs on the current day.
     pub(super) fn runs(&self, i: usize) -> bool {
-        let m = self.departures[i].mask;
-        m & self.day_bits.0 != 0 && m & self.day_bits.1 != 0
+        let d = &self.departures[i];
+        let bits = if d.yesterday { self.yesterday_bits } else { self.day_bits };
+        d.mask & bits.0 != 0 && d.mask & bits.1 != 0
+    }
+
+    /// At midnight: tonight's night trips (24:10, ...) whose tour's bus is on them already
+    /// or about to take them on are from now on yesterday's (00:10): the same moment, and
+    /// the tour's bus goes on with the next of them. Left as tonight's, the bus found no
+    /// trip of its tour to take on after midnight, and yesterday's came with a bus of its own.
+    fn night_trips_to_yesterday(&mut self) {
+        let to: HashMap<usize, usize> = (0..self.departures.len())
+            .filter(|&i| !self.departures[i].yesterday)
+            .filter_map(|i| Some((i, self.night_twin.get(i).copied().flatten()?)))
+            .collect();
+        if to.is_empty() {
+            return;
+        }
+        let map = |i: &mut usize| {
+            if let Some(&j) = to.get(i) {
+                *i = j;
+            }
+        };
+        for v in self.car_departure.values_mut() {
+            map(v);
+        }
+        self.pending.iter_mut().for_each(map);
+        self.waiting.iter_mut().for_each(map);
+        let moved = |set: &mut std::collections::HashSet<usize>| {
+            *set = set.iter().map(|i| to.get(i).copied().unwrap_or(*i)).collect();
+        };
+        moved(&mut self.awaiting);
+        moved(&mut self.later_layover);
+        moved(&mut self.startup);
+        self.retry_at = self.retry_at.iter().map(|(i, t)| (to.get(i).copied().unwrap_or(*i), *t)).collect();
+        for (&from, &j) in &to {
+            if self.departures[from].spawned {
+                self.departures[j].spawned = true;
+            }
+        }
     }
 
     /// Move the timetable on to the clock's date when it has changed (midnight): the day's
@@ -407,9 +457,15 @@ impl ScheduleSim {
         if date == self.day {
             return;
         }
+        let forward = date > self.day;
         self.day = date;
         self.day_bits = day_bits(&self.calendar, clock);
+        self.yesterday_bits = self.yesterday_bits();
         self.next_day_bit = 1 << ((clock.weekday() + 1) % 7);
+        // (only when the clock runs on over midnight: set back, every bus went already)
+        if forward {
+            self.night_trips_to_yesterday();
+        }
         let busy: HashSet<usize> = self
             .pending
             .iter()
@@ -468,4 +524,24 @@ impl ScheduleSim {
         let d = &self.departures[i];
         tour_key_of(&d.ai_group.to_ascii_lowercase(), &d.line, &d.tour)
     }
+}
+
+/// Per departure, its night twin (`ScheduleSim::night_twin`): the trip after 24:00 of a tour
+/// and the same trip of yesterday's tour, a day earlier.
+pub(super) fn night_twins(departures: &[Departure]) -> Vec<Option<usize>> {
+    let key = |d: &Departure, time: f64| (d.line.clone(), d.tour.clone(), d.trip, d.profile, (time * 10.0).round() as i64);
+    let tonight: HashMap<_, usize> = departures
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| !d.yesterday && d.time >= DAY)
+        .map(|(i, d)| (key(d, d.time), i))
+        .collect();
+    let mut twin = vec![None; departures.len()];
+    for (i, d) in departures.iter().enumerate().filter(|(_, d)| d.yesterday) {
+        if let Some(&j) = tonight.get(&key(d, d.time + DAY)) {
+            twin[i] = Some(j);
+            twin[j] = Some(i);
+        }
+    }
+    twin
 }

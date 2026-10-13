@@ -1158,7 +1158,15 @@ impl TrafficSim {
         }
         if !car.state.drive(&self.net, dt, lead_now, stop_at) {
             if debug {
-                log::info!("t={:.1}: car {} ran out of road at {:.1} m/s: taken off", self.time, car.id, car.state.speed);
+                // (where, and the nearest lane start beyond the end: a network gap the map's
+                // paths do not close shows here)
+                let lane = &self.net.lanes[car.state.lane];
+                let end = lane.end();
+                let near = (0..self.net.lanes.len())
+                    .filter(|&l| l != car.state.lane && self.net.lanes[l].kind == lane.kind)
+                    .map(|l| (l, (self.net.lanes[l].start() - end).length()))
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                log::info!("t={:.1}: car {} ran out of road at {:.1} m/s on lane {} ending at ({:.1}, {:.1}, {:.1}) heading {:.0}: taken off (nearest lane start {:?}, next {:?}, route {}, pool {:?}, type {})", self.time, car.id, car.state.speed, car.state.lane, end.x, end.y, end.z, lane.headings.last().copied().unwrap_or(0.0), near.map(|(l, d)| (l, d, self.net.lanes[l].headings.first().copied().unwrap_or(0.0), self.net.lanes[l].start().z)), lane.next.iter().map(|&n| (n, self.net.lanes[n].no_cars, self.net.lanes[n].density)).collect::<Vec<_>>(), car.state.route.len(), car.state.traffic_pool.as_ref().map(|p| p.0), car.state.veh_type);
             }
             return None;
         }

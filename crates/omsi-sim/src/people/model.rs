@@ -359,6 +359,16 @@ pub struct PeopleSim {
     /// The timetable's name of each stop object (`Schedule::stop_names`), the names the
     /// targets above are made of.
     pub stop_names: Option<HashMap<i64, String>>,
+    /// Per bus stop, the stop objects its trips go on to by timetable name
+    /// (`Schedule::stop_target_objects`): whose exit weight a destination has.
+    pub stop_target_objects: Option<HashMap<i64, HashMap<String, Vec<i64>>>>,
+    /// How many of `types` (the first) people are drawn from at random: the figures put
+    /// after them (`type_index`: the player's figure on foot - the map's driver -, other
+    /// players' figures) are nobody's to wear but theirs.
+    pub pool_types: usize,
+    /// What a passenger of the player's bus has just said (the voice's name, `TooCold_1`):
+    /// the HUD shows OMSI's hint for it (`Languages/*_basic*.olf`, `RL_PassDlg_<name>`).
+    pub dialog: Option<String>,
     /// The player's duty (`set_duty`): its trip, the stop of it the duty is due at, and
     /// whether the trip has reached its last stop. None: free drive, and nobody waiting
     /// boards the player's bus.

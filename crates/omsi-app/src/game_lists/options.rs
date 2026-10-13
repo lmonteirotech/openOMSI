@@ -20,6 +20,7 @@ pub(super) fn option_now(app: &App, verb: &str, arg: &str) -> Option<f32> {
         "pedal_t" => s.pedal_throttle,
         "pedal_b" => s.pedal_brake,
         "mouse_sens" => s.mouse_sens,
+        "key_pedal_speed" => s.key_pedal_speed,
         "mouse_pedal_strength" => s.mouse_pedal_strength,
         "look_sens" => s.look_sens,
         "look_smoothing_ms" => s.look_smoothing_ms,
@@ -151,6 +152,10 @@ pub(super) fn option_set(app: &mut App, verb: &str, arg: &str, v: f32) -> Option
         "mouse_sens" => {
             app.settings.mouse_sens = (v * 100.0).round() / 100.0;
             Some(("mouse_sens", app.settings.mouse_sens.to_string()))
+        }
+        "key_pedal_speed" => {
+            app.settings.key_pedal_speed = ((v * 100.0).round() / 100.0).clamp(0.25, 2.0);
+            Some(("key_pedal_speed", app.settings.key_pedal_speed.to_string()))
         }
         "mouse_pedal_strength" => {
             app.settings.mouse_pedal_strength = ((v * 100.0).round() / 100.0).clamp(0.5, 2.0);
@@ -364,6 +369,7 @@ pub(super) fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "mouse_right" => s.mouse_right_off,
         "mouse_smooth" => s.mouse_smooth,
         "mouse_hold" => s.mouse_hold,
+        "mouse_pedals" => s.mouse_pedals,
         "blinker_cancel" => s.blinker_cancel,
         "fps" => s.show_fps,
         "get_up" => s.get_up,
@@ -515,6 +521,10 @@ pub(super) fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static 
             app.settings.mouse_hold = on;
             app.sync_mouse_grab();
             Some(("mouse_hold", bit))
+        }
+        "mouse_pedals" => {
+            app.settings.mouse_pedals = on;
+            Some(("mouse_pedals", bit))
         }
         "get_up" => {
             app.settings.get_up = on;

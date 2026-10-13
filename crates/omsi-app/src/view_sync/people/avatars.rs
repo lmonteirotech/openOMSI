@@ -208,3 +208,67 @@ impl FaceView {
         FaceView { face: omsi_sim::human::face::Face::new(seed as u64), rest: (Vec::new(), Vec::new()), live: false }
     }
 }
+
+/// The file a body material's texture is read from: the clothing variant's own folder
+/// first, else the type's folders (as `PeopleView::make_meshes` looks it up).
+pub(super) fn material_texture(ty: &HumanType, dirs: &[std::path::PathBuf], texture: &str, variant: usize) -> Option<std::path::PathBuf> {
+    let (name, first) = ty.variant_texture(texture, variant);
+    let mut look: Vec<&std::path::Path> = first.into_iter().collect();
+    look.extend(dirs.iter().map(|p| p.as_path()));
+    omsi_texture::find_texture(name, &look).or_else(|| omsi_texture::find_texture(texture, &look))
+}
+
+/// A texture of an avatar read ahead on a worker: the picture for the GPU and the PBR maps
+/// beside it.
+pub(super) type Prepared = (Option<Arc<omsi_texture::TextureData>>, Option<omsi_texture::pbr::PbrImages>);
+
+/// The avatars whose textures are read on the workers before anybody is drawn with them.
+/// Read on the frame, an avatar that came into view for the first time cost 25-70 ms
+/// (colour, normal and opacity pictures of up to 2048 pixels decoded), and walking or
+/// driving past new people was a string of such frames (#2463). Until its pictures are
+/// there, a person is drawn as the content's own human and changes into the avatar then.
+#[derive(Default)]
+pub(crate) struct Warm {
+    /// Avatars (by `Arc` address) whose pictures are read.
+    ready: hashbrown::HashSet<usize>,
+    /// Avatars being read.
+    reading: hashbrown::HashSet<usize>,
+    /// What the workers finished: the avatar and its pictures by file.
+    done: Arc<Mutex<Vec<(usize, Vec<(std::path::PathBuf, Prepared)>)>>>,
+    /// Pictures read and not uploaded yet, by file.
+    pub(super) prepared: hashbrown::HashMap<std::path::PathBuf, Prepared>,
+}
+
+impl Warm {
+    /// Whether avatar `a`'s pictures are read; starts reading them on a worker if not.
+    pub(super) fn ready(&mut self, a: &Arc<HumanType>, root: &std::path::Path) -> bool {
+        for (k, list) in self.done.lock().drain(..) {
+            self.reading.remove(&k);
+            self.ready.insert(k);
+            self.prepared.extend(list);
+        }
+        let key = Arc::as_ptr(a) as usize;
+        if self.ready.contains(&key) {
+            return true;
+        }
+        if self.reading.insert(key) {
+            let (a, root, done) = (a.clone(), root.to_path_buf(), self.done.clone());
+            omsi_scene::threads::background_pool().spawn(move || {
+                let dirs = a.texture_dirs(&root);
+                let mut seen = hashbrown::HashSet::new();
+                let mut list = Vec::new();
+                for m in a.meshes.iter().flat_map(|hm| hm.materials.iter()) {
+                    let Some(path) = material_texture(&a, &dirs, &m.texture, 0) else { continue };
+                    if !seen.insert(path.clone()) {
+                        continue;
+                    }
+                    let data = omsi_texture::gpu::load_gpu_fast(&path).ok().map(|(t, _)| Arc::new(t));
+                    let pbr = if a.face.is_some() { omsi_texture::pbr::load_set(&omsi_texture::pbr::find(&path)) } else { None };
+                    list.push((path, (data, pbr)));
+                }
+                done.lock().push((key, list));
+            });
+        }
+        false
+    }
+}

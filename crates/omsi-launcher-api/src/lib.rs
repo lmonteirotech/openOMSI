@@ -484,6 +484,30 @@ fn favourites_save(list: Vec<String>) -> Answer {
     Ok(json!(true))
 }
 
+/// The player's own notes on maps and buses (#1791), kept in the data folder: one object,
+/// a note by its key (`map:maps/x/global.cfg`, `bus:vehicles/x/y.bus`).
+fn notes_path() -> PathBuf {
+    core::data_dir().join("notes.json")
+}
+
+fn notes_get() -> Answer {
+    Ok(std::fs::read_to_string(notes_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(Value::is_object).unwrap_or_else(|| json!({})))
+}
+
+fn notes_save(key: String, text: String) -> Answer {
+    let mut all = notes_get()?;
+    let key = key.replace('\\', "/").to_lowercase();
+    if let Some(o) = all.as_object_mut() {
+        if text.trim().is_empty() {
+            o.remove(&key);
+        } else {
+            o.insert(key, json!(text));
+        }
+    }
+    std::fs::write(notes_path(), serde_json::to_vec_pretty(&all).map_err(err)?).map_err(err)?;
+    Ok(json!(true))
+}
+
 // --- the game's renderer: the bus preview and the city map (see `service`) -----------
 
 /// What the bus preview shows: the bus, its paint, and the map, weather, time and date that
@@ -580,6 +604,10 @@ pub fn call(cmd: &str, args: &Value, p: &dyn Platform) -> Answer {
         "vehicles" => vehicles(p),
         "weather" => weather(),
         "nearest_airport" => nearest_airport(arg::<String>(args, "map")?),
+        "tour_buses" => Ok(json!(core::tour_buses(&arg::<String>(args, "map")?, &arg::<String>(args, "group")?, &arg::<String>(args, "date")?)
+            .into_iter()
+            .map(|(file, paint, number)| json!({ "file": file, "paint": paint, "number": number }))
+            .collect::<Vec<_>>())),
         "metar_airports" => metar_airports(),
         "custom_weather" => custom_weather(arg::<String>(args, "weather")?),
         "custom_weather_text" => custom_weather_text(arg::<Value>(args, "custom")?),
@@ -635,6 +663,8 @@ pub fn call(cmd: &str, args: &Value, p: &dyn Platform) -> Answer {
         "server_query" => server_query(arg::<String>(args, "address")?),
         "choice_save" => choice_save(arg::<Value>(args, "choice")?),
         "favourites_save" => favourites_save(arg::<Vec<String>>(args, "list")?),
+        "notes_get" => notes_get(),
+        "notes_save" => notes_save(arg::<String>(args, "key")?, arg::<String>(args, "text")?),
         "preview_look" => preview_look(p, arg::<String>(args, "bus")?, arg::<String>(args, "paint")?, arg::<String>(args, "map")?, arg::<String>(args, "weather")?, arg::<i32>(args, "time")?, arg::<String>(args, "date")?),
         "preview_warm" => preview_warm(p),
         "route_map" => route_map(p, arg::<String>(args, "map")?, arg::<String>(args, "date")?, arg::<String>(args, "trip")?),

@@ -4,6 +4,7 @@
 pub fn is_game_action(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name.starts_with("view_")
+        || name.starts_with("radio_")
         || matches!(
             name.as_str(),
             "sim_pause"

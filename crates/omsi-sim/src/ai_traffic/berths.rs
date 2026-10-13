@@ -13,10 +13,11 @@
 //! then its id), but a bus whose body already stands in the berth comes before any other:
 //! it is there. The holder keeps the berth through boarding, the doors closing and pulling
 //! out, until its rear has left it; a route change, its removal or the network changing
-//! give it up too. Who has not got the berth waits `QUEUE_STANDOFF` before it and has not
-//! served the stop: it never opens its doors there, unless the berth is taken for long (a
-//! bus on its layover at a stop several lines share), when it serves the stop where it
-//! stands and goes round the holder afterwards (`SERVE_BEHIND_REACH`, `HELD_LONG`).
+//! give it up too. Who has not got the berth waits `QUEUE_STANDOFF` before it. Standing
+//! right behind the bus at the berth it serves the stop where it stands, as two buses at one
+//! stop do in OMSI 2 (`SERVE_QUEUED_REACH`); further back it opens its doors only when the
+//! berth is taken for long (a bus on its layover at a stop several lines share), and goes
+//! round the holder afterwards (`SERVE_BEHIND_REACH`, `HELD_LONG`).
 
 use super::*;
 use std::collections::BTreeMap;
@@ -37,8 +38,12 @@ pub const REGION_AHEAD: f32 = 1.5;
 /// standing in it (m/s).
 pub const REGION_PASSING: f32 = 2.0;
 /// A bus waiting for the berth stops its front this far before the rear of a bus docked
-/// there (m).
-pub const QUEUE_STANDOFF: f32 = 10.0;
+/// there (m): close up, as buses queue at a stop (10 m left a gap of a bus length, #2429).
+pub const QUEUE_STANDOFF: f32 = 3.0;
+/// A bus waiting for the berth with its origin this near the stop point (m) - right behind
+/// the bus docked there, in the stop's reach - serves the stop where it stands at once, as
+/// in OMSI 2 two buses at a stop take on people together (#2429). Further back it waits.
+pub const SERVE_QUEUED_REACH: f32 = 25.0;
 /// A waiting bus standing this near the stop (its origin to the stop point, m) serves it
 /// where it stands when the berth is taken for long.
 pub const SERVE_BEHIND_REACH: f32 = 40.0;

@@ -1,9 +1,7 @@
 @fragment
 fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     var unused = 0.0;
-    let c = shade_vanilla(in, &unused, camera.cam_pos.xyz);
-    if (BLEND_DEPTH && c.a == 0.0) { discard; }
-    return c;
+    return shade_vanilla(in, &unused, camera.cam_pos.xyz);
 }
 
 // Shared with Enhanced and the wheel splash mask: pools spread as the road soaks.
@@ -23,7 +21,6 @@ fn road_puddle_coverage(world: vec3<f32>, normal: vec3<f32>, wet: f32) -> f32 {
 fn fs_vanilla_reflections(in: FsIn) -> EnhancedOut {
     var weight = 0.0;
     let c = shade_vanilla(in, &weight, camera.cam_pos.xyz);
-    if (BLEND_DEPTH && c.a == 0.0) { discard; }
     let coverage = select(c.a, 0.0, in.params2.w > 1.5);
     var out: EnhancedOut;
     out.color = c;
@@ -144,7 +141,12 @@ fn shade_vanilla(in: FsIn, puddle_weight: ptr<function, f32>, eye: vec3<f32>) ->
     // The low-range Vanilla+ target has no exposure/tonemapping. Saturate the
     // diffuse light before modulating the texture, as the classic path does:
     // overlapping lamps must not clip a coloured texture into a white patch.
-    var lit = albedo * clamp(mat_light, vec3<f32>(0.0), vec3<f32>(1.0));
+    // The light is OMSI's - the envir.cfg's sun, sky and ambient and its lamps - and those
+    // numbers are what Direct3D multiplies into the gamma-encoded texture: it is laid on the
+    // encoded texture here too, as in the classic picture below. Multiplied in linear light,
+    // a light L showed as L^(1/2.2): the night's 0.06 as 0.28, every night, dusk and shade
+    // in Vanilla+ several times as bright as in OMSI 2 (#300, #1612).
+    var lit = srgb_decode(srgb_encode(albedo) * clamp(mat_light, vec3<f32>(0.0), vec3<f32>(1.0)));
     // The vanilla picture: Omsi.exe's texture stages multiply the gamma-encoded texture by
     // the vertex light (clamped at 1); here the texture is sampled linear and the target
     // encodes again, so multiplied here a light L showed as L^(1/2.2) - a night at 0.06
@@ -194,9 +196,9 @@ fn shade_vanilla(in: FsIn, puddle_weight: ptr<function, f32>, eye: vec3<f32>) ->
         // too, 0x5fa8f0) among them - clamped at 1. (Added once more after the map, the
         // saloon lamps lit a cabin twice over, flat white where the map was full; and the
         // material's colour took the map down with it.)
-        let lm = textureSample(t_light, s_diffuse, buv).rgb * clamp(in.params2.x, 0.0, 1.0);
+        let lm = srgb_encode(textureSample(t_light, s_diffuse, buv).rgb) * clamp(in.params2.x, 0.0, 1.0);
         let v = clamp(material.emissive.rgb + mat_light + material.color.rgb * interior_lamps(in.world, n, in.params2.z), vec3<f32>(0.0), vec3<f32>(1.0));
-        lit = albedo * (v + lm * (vec3<f32>(1.0) - v));
+        lit = srgb_decode(srgb_encode(albedo) * (v + lm * (vec3<f32>(1.0) - v)));
     }
     // the D3D material's own highlight (specular colour and power of the o3d file or a
     // [matl_allcolor]), lit at the vertices (see `vertex_specular`) and added after the

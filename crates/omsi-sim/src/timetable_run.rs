@@ -121,10 +121,6 @@ pub struct PlannedTrip {
 /// The bus is at a stop within this distance (m), and has left it beyond the second.
 pub const AT_STOP: f64 = 25.0;
 
-/// How long before its departure the next trip of a duty may begin when the bus leaves the
-/// terminus it has served (s).
-pub const EARLY_START: f64 = 300.0;
-
 pub const LEFT_STOP: f64 = 35.0;
 
 /// How a trip of the player's duty ended (`Finished`).
@@ -209,7 +205,31 @@ pub struct PlayerDuty {
     /// Where the bus was at the last update: how far along the way to the next stop it
     /// is, for the delay on the way (`delay`).
     position: Option<glam::DVec3>,
+    /// The trips without a line number that are public trips all the same: the map's depot
+    /// file has a route of line 000 to their terminus through their stops (Bad Kinzau's
+    /// SkiXPress, 00001 to GonnseeSKI). The IBIS is typed for them, not for the next trip
+    /// with a number as on a works trip from the depot (#2425).
+    pub unnumbered_public: Vec<String>,
+    /// A stop driven past without opening the doors, for the bus that stops further on and
+    /// serves it there (see [`PlayerDuty::step_back`]).
+    pub(crate) passed: PassedStop,
 }
+
+/// What [`PlayerDuty::step_back`] needs to know of the stops the bus left.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PassedStop {
+    /// The doors were opened while the bus was at the stop it is due at.
+    doors: bool,
+    /// The stop (its index in the trip) the bus last left without opening the doors.
+    stop: Option<usize>,
+    /// Where the bus stands serving the stop it came back to: it has left it when it is
+    /// [`LEFT_STOP`] away from there, not from the stop's object it had passed already.
+    stand: Option<glam::DVec3>,
+}
+
+/// How far beyond a stop's object the bus may stand to serve it after having passed it
+/// (m): a station's long bay, where the object stands at its beginning (#2468).
+pub const STEP_BACK: f64 = 120.0;
 
 pub const DAY: f64 = 86_400.0;
 

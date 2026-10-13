@@ -170,7 +170,7 @@ fn an_unsignalled_junction_kept_for_it_is_crossed_at_normal_speed_while_the_cros
     let f = Fixture::new();
     let mut t = sim(&f, crossroads(150.0), 0);
     let e = siren(&mut t, &f, 0, 105.0, 1, 10.0);
-    // from the east: by the rules (priority to the right) this one would go first
+    // from the east, there as early: without the emergency vehicle it could go first
     let cross = car(&mut t, &f, 3, 100.0, 2, 8.0);
     let mut fastest_inside = 0.0f32;
     let mut cross_waited = false;
@@ -760,4 +760,61 @@ fn the_players_and_a_lan_players_emergency_vehicles_are_made_way_for() {
         assert_eq!(get(&t, c).make_way.map(|w| w.from), Some(from));
         assert!(moved > 0.3, "it moved to the kerb ({moved:.2})");
     }
+}
+
+/// #2431: an emergency vehicle that stands before a junction (at a red light, at a stop, in
+/// a queue - or a player's bus whose script sets `TrafficPriority`) does not keep it: the
+/// cross traffic goes on its green after `STANDING_LETS_GO`, and the junction is kept again
+/// once it moves.
+#[test]
+fn a_standing_emergency_vehicle_does_not_keep_the_junction() {
+    let f = Fixture::new();
+    let mut t = sim(&f, signalled_crossroads(150.0), 2);
+    // north-south red, east-west green
+    show(&mut t, 0, 0);
+    let e = siren(&mut t, &f, 0, 110.0, 1, 0.0);
+    let cross = car(&mut t, &f, 1, 60.0, 2, 8.0);
+    let mut kept = false;
+    let mut through_at = None;
+    for _ in 0..(40.0 / super::fixed_step::SIM_DT) as usize {
+        hold_still(&mut t, e);
+        step(&mut t);
+        kept |= t.emergency.reservations.iter().any(|r| r.owner == e);
+        if through_at.is_none() && find(&t, cross).is_none_or(|c| c.state.lane == 9) {
+            through_at = Some(t.time);
+        }
+    }
+    assert!(kept, "the junction was kept for it while it came");
+    let at = through_at.expect("the cross traffic went on its green");
+    assert!(at < STANDING_LETS_GO + 15.0, "the cross traffic waited for a standing emergency vehicle until {at:.1} s");
+    assert!(t.emergency.reservations.is_empty(), "a junction is still kept for one that stands");
+    // it moves again: the junction is kept for it again
+    t.cars.iter_mut().find(|c| c.id == e).unwrap().state.max_speed_kmh = 50.0;
+    show(&mut t, 0, 6);
+    let mut again = false;
+    for _ in 0..(10.0 / super::fixed_step::SIM_DT) as usize {
+        step(&mut t);
+        again |= t.emergency.reservations.iter().any(|r| r.owner == e);
+    }
+    assert!(again, "the junction was not kept again once it moved");
+}
+
+/// A car whose way through the junction meets nothing of the emergency vehicle's (the
+/// oncoming traffic going straight on beside it) is not held at its entry.
+#[test]
+fn a_car_whose_way_meets_nothing_of_its_way_is_not_held() {
+    let f = Fixture::new();
+    let mut t = sim(&f, crossroads(150.0), 0);
+    let e = siren(&mut t, &f, 0, 110.0, 1, 6.0);
+    // from the north, straight on south (lane 6 runs beside lane 4 the other way)
+    let oncoming = car(&mut t, &f, 2, 120.0, 2, 6.0);
+    assert!(!t.net.crossings[4].iter().any(|c| c.other == 6), "the scene's two ways do not meet");
+    let mut held = false;
+    for _ in 0..(15.0 / super::fixed_step::SIM_DT) as usize {
+        step(&mut t);
+        if t.emergency.reservations.iter().any(|r| r.owner == e) {
+            held |= find(&t, oncoming).is_some_and(|c| c.yield_to == Some(e));
+        }
+    }
+    assert!(!held, "the oncoming car waited for the emergency vehicle's junction");
 }

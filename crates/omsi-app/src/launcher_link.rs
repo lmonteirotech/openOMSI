@@ -140,7 +140,14 @@ fn webview_hint() -> String {
             _ => "The launcher's window needs Microsoft Edge WebView2 (part of Windows 10 and 11; for older systems: https://developer.microsoft.com/microsoft-edge/webview2/).".to_string(),
         }
     } else if cfg!(target_os = "linux") {
-        "The launcher's window needs WebKitGTK 4.1 (the package libwebkit2gtk-4.1-0 on Debian and Ubuntu, webkit2gtk4.1 on Fedora, webkit2gtk-4.1 on Arch).".to_string()
+        let base = "The launcher's window needs WebKitGTK 4.1 (the package libwebkit2gtk-4.1-0 on Debian and Ubuntu, webkit2gtk4.1 on Fedora, webkit2gtk-4.1 on Arch).";
+        // (SteamOS ships without it and its system is read-only, #2458)
+        let steamos = std::fs::read_to_string("/etc/os-release").is_ok_and(|t| t.lines().any(|l| l.trim() == "ID=steamos" || l.trim() == "ID=\"steamos\""));
+        if steamos {
+            format!("{base}\n\nSteamOS does not include it. In Desktop Mode, in Konsole: sudo steamos-readonly disable, then sudo pacman -S webkit2gtk-4.1, then sudo steamos-readonly enable (a SteamOS update can remove it again). See docs/USER_GUIDE.md.")
+        } else {
+            base.to_string()
+        }
     } else {
         "Its log is in the openOMSI data folder (launcher.log).".to_string()
     }

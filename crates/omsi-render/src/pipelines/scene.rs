@@ -140,12 +140,13 @@ impl SceneBase {
                     fs != "fs_surface_depth",
                     fs == "fs_enhanced",
                 ),
-                // Cutouts and depth-writing blends discard uncovered pixels; opaque and
-                // depth-disabled blends retain early depth testing.
+                // Only cutouts and painted terrain keep their discard; opaque and blended
+                // materials retain early depth testing. (A blend that writes depth writes it
+                // where it is invisible too: Omsi.exe draws `[matl_alpha] 2` with the alpha
+                // test off, and content hides things under invisible covers, #2059.)
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &[
                         ("ALPHA_TEST", if alpha_to_coverage { 1.0 } else { 0.0 }),
-                        ("BLEND_DEPTH", if blend.is_some() && depth_write { 1.0 } else { 0.0 }),
                         (
                             "ALPHA_TO_COVERAGE",
                             if use_alpha_to_coverage { 1.0 } else { 0.0 },

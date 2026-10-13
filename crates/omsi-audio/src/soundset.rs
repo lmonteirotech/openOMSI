@@ -42,6 +42,9 @@ struct RuntimeSound {
     curve_inputs: Vec<CurveInput>,
     /// Where the variables the entry reads stand in its set's table (see `SoundSet::vars`).
     ix: VarIx,
+    /// A triggered entry: what its volume curves gave when the trigger last fired, kept
+    /// for as long as that sound plays (None: read them now).
+    fired_curves: Option<f32>,
 }
 
 /// The places of an entry's variables in its set's table of variables read each frame: its
@@ -102,7 +105,7 @@ impl CurveInput {
 impl RuntimeSound {
     fn new(def: SoundEntry, clip: Option<Arc<Clip>>) -> RuntimeSound {
         let curve_inputs = def.vol_curves.iter().map(CurveInput::of).collect();
-        RuntimeSound { def, clip, voice: None, held: false, active_since: None, last_gain: 1.0, last_pitch: 1.0, curve_inputs, ix: VarIx::default() }
+        RuntimeSound { def, clip, voice: None, held: false, active_since: None, last_gain: 1.0, last_pitch: 1.0, curve_inputs, ix: VarIx::default(), fired_curves: None }
     }
 }
 
@@ -516,8 +519,8 @@ impl SoundSet {
     /// the trigger fired (None: as it is now). Omsi.exe starts a trigger's sounds in the
     /// middle of the script (0x74f2e8), so the volume they start with is that of the moment:
     /// the SD200's door hits read `doorSpeed_<n>`, which the door script reverses right
-    /// after firing them - read at the frame's end they were silent (#676). From the next
-    /// frame on the volume follows the curves as they stand, like every other entry's.
+    /// after firing them - read at the frame's end they were silent (#676). What the curves
+    /// gave then stays the sound's until it ends (#611).
     pub fn update_fired(
         &mut self,
         engine: &AudioEngine,
@@ -571,9 +574,12 @@ impl SoundSet {
             // not at all - #1851, #611, #1268, #1311, #1515, #1900, #1418).
             let looping = !triggered && !s.def.no_loop;
             let idle = s.voice.is_none_or(|id| !engine.is_playing(id));
+            let gain_before = s.last_gain;
             if fired || rising || (looping && idle) {
                 s.last_gain = 1.0;
             }
+            // (fired: its curves are read anew, as they stand now)
+            let before = if fired { s.fired_curves.take() } else { None };
             // (the conditions as read above: not read again)
             let e = match fired_by {
                 Some(t) => ctx.eval_holding(s, &|n| at_fire(t, n).or_else(|| var(n)), object_to_world, holds),
@@ -607,7 +613,15 @@ impl SoundSet {
                 continue;
             }
             // one-shot: started by its trigger or by its conditions starting to hold; the
-            // volume follows the curves while it plays
+            // volume follows the curves while it plays (a triggered one's: those of the
+            // moment it fired)
+            // Fired again at a volume that is not heard - a door leaf bouncing back off its
+            // stop hits it a second time, slowly - the hit that is playing plays on as it was.
+            if fired && !e.audible && s.voice.is_some_and(|id| engine.is_playing(id)) {
+                s.fired_curves = before;
+                s.last_gain = gain_before;
+                continue;
+            }
             let params = ctx.params(s, &e, false, object_to_world);
             if (fired || rising) && e.audible {
                 if let Some(id) = s.voice {
@@ -817,11 +831,28 @@ impl Ctx {
         };
         // (an untriggered entry whose conditions fail is at volume 0)
         let mut vol = if holds { def.volume * self.master } else { 0.0 };
-        for (k, (vc, &kind)) in def.vol_curves.iter().zip(&s.curve_inputs).enumerate() {
-            if let Some(x) = SoundSet::curve_input_as(kind, vc, s.ix.curves.get(k).copied().unwrap_or(0), var, active, facing) {
-                vol *= curve(&vc.points, x);
+        // A triggered sound takes the volume its curves give when it starts and keeps it
+        // to its end, as the stock sound.cfg says of `[trigger]` entries ("Volumen und Pitch
+        // [werden] nur einmalig beim Abspielstart zugewiesen"): the door hits of the SD200/
+        // SD202 and of Kajosoft's buses read `doorSpeed_<n>`, which is 0 once the leaf has
+        // stopped, and were cut to a short click a frame after they started (#611, #1268).
+        // Where it is and how far away still change while it plays.
+        let curves = match s.fired_curves.filter(|_| triggered) {
+            Some(c) => c,
+            None => {
+                let mut c = 1.0;
+                for (k, (vc, &kind)) in def.vol_curves.iter().zip(&s.curve_inputs).enumerate() {
+                    if let Some(x) = SoundSet::curve_input_as(kind, vc, s.ix.curves.get(k).copied().unwrap_or(0), var, active, facing) {
+                        c *= curve(&vc.points, x);
+                    }
+                }
+                if triggered {
+                    s.fired_curves = Some(c);
+                }
+                c
             }
-        }
+        };
+        vol *= curves;
         // `[3d]`: full up to the range, then range / distance
         let dist_gain = pos.map(|p| crate::mixer::distance_gain(def.range, (p - self.listener).length()));
         if let Some(g) = dist_gain {
@@ -1163,8 +1194,30 @@ mod tests {
         assert_eq!(eval(&ctx(2, true), hit.clone(), &now).gain, 0.0, "read at the frame's end: silent");
         let fired = |n: &str| at_fire("ev_doorhitclose_0", n).or_else(|| now(n));
         assert_eq!(eval(&ctx(2, true), hit.clone(), &fired).gain, 1.0);
-        let set = SoundSet { sounds: vec![RuntimeSound::new(hit, None)], master: 1.0, dir: Default::default(), inside: true, amount: 1.0, ai: false, listener_vehicle: true, muffled: false, parts: Vec::new(), vars: None };
+        let set = SoundSet { sounds: vec![RuntimeSound::new(hit.clone(), None)], master: 1.0, dir: Default::default(), inside: true, amount: 1.0, ai: false, listener_vehicle: true, muffled: false, parts: Vec::new(), vars: None };
         assert_eq!(set.curve_triggers(), vec!["ev_doorhitclose_0".to_string()]);
+    }
+
+    /// The door hit keeps the volume it fired with to its end, though `doorSpeed_0` is 0
+    /// from the next frame on (#611, #1268); fired again, it reads the curves anew.
+    #[test]
+    fn a_triggered_sound_keeps_the_volume_it_started_with() {
+        let _g = globals();
+        let hit = SoundEntry {
+            volume: 1.0,
+            triggers: vec!["ev_doorhitclose_0".into()],
+            vol_curves: vec![VolCurve { variable: "doorSpeed_0".into(), points: vec![(-1.0, 1.0), (-0.5, 0.0)] }],
+            ..Default::default()
+        };
+        let c = ctx(2, true);
+        let mut s = RuntimeSound::new(hit, None);
+        let fast = |n: &str| (n == "doorSpeed_0").then_some(-1.0);
+        let stopped = |n: &str| (n == "doorSpeed_0").then_some(0.0);
+        let slow = |n: &str| (n == "doorSpeed_0").then_some(-0.75);
+        assert_eq!(c.eval_holding(&mut s, &fast, &Mat4::IDENTITY, true).gain, 1.0, "as it fires");
+        assert_eq!(c.eval_holding(&mut s, &stopped, &Mat4::IDENTITY, true).gain, 1.0, "the leaf has stopped: still playing out");
+        s.fired_curves = None;
+        assert!((c.eval_holding(&mut s, &slow, &Mat4::IDENTITY, true).gain - 0.5).abs() < 1e-4, "fired again, slower");
     }
 
     /// The stock IBIS announces Spandau's "Falkenseer Ch/Stadtrandstr" with the file

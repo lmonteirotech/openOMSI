@@ -530,7 +530,8 @@ impl Renderer {
     /// Whether the card ran out of memory since the last call (the game then keeps fewer
     /// textures, before the driver gives up the device).
     pub fn take_out_of_memory(&self) -> bool {
-        self.errors.out_of_memory.swap(false, std::sync::atomic::Ordering::Relaxed)
+        let texture = crate::resources::TEXTURE_OUT_OF_MEMORY.swap(false, std::sync::atomic::Ordering::Relaxed);
+        self.errors.out_of_memory.swap(false, std::sync::atomic::Ordering::Relaxed) | texture
     }
 
     pub fn device_lost(&self) -> Option<String> {

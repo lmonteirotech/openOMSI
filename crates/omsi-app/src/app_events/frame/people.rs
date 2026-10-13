@@ -111,11 +111,17 @@ pub(super) fn humans(cx: HumansCx, dt: f32) {
         cx.gfx.renderer.as_ref(),
         cx.gfx.scene.as_mut(),
     ) {
-        let center = cx.player.player
-            .as_ref()
-            .map(|p| p.vehicle.position)
-            .or(cx.view.camera.as_ref().map(|c| c.position))
-            .unwrap_or(DVec3::ZERO);
+        // (where the camera is, as Omsi.exe fills the stops round the tile it shows - at the
+        // bus's height, not up in the sky of the map view. Kept at the player's bus, the stops
+        // an AI bus was watched at from the free camera stood empty: nobody got on or off
+        // after its first stop, #2319)
+        let bus = cx.player.player.as_ref().map(|p| p.vehicle.position);
+        let center = match (cx.view.camera.as_ref().map(|c| c.position), bus) {
+            (Some(c), Some(b)) => DVec3::new(c.x, c.y, b.z),
+            (Some(c), None) => c,
+            (None, Some(b)) => b,
+            (None, None) => DVec3::ZERO,
+        };
         // (the trips due at the stops soon: once a game minute, #1415)
         if let (Some(s), Some(t)) = (cx.traffic.schedule.as_ref(), cx.traffic.traffic.as_ref()) {
             if (t.day_time - h.due_at).abs() >= 60.0 {
@@ -130,6 +136,7 @@ pub(super) fn humans(cx: HumansCx, dt: f32) {
         if h.stop_targets.is_none() {
             h.stop_targets = cx.traffic.schedule.as_ref().map(|s| s.stop_targets());
             h.stop_names = cx.traffic.schedule.as_ref().map(|s| s.stop_names());
+            h.stop_target_objects = cx.traffic.schedule.as_ref().map(|s| s.stop_target_objects());
             if let Some(t) = &h.stop_targets {
                 log::info!("people: {} bus stops with timetable targets", t.len());
             }
@@ -208,6 +215,9 @@ pub(super) fn humans(cx: HumansCx, dt: f32) {
         if let Some(m) = h.take_message() {
             *cx.ui.service_msg = Some((m, 6.0));
         }
+        if let Some(t) = h.take_dialog().and_then(|n| passenger_dialog(&n)) {
+            *cx.ui.service_msg = Some((t, 5.0));
+        }
         if let Some(p) = cx.player.player.as_mut() {
             if took {
                 p.vehicle.set_var("GivenTicket", -1.0);
@@ -244,3 +254,32 @@ pub(super) fn on_foot(mut cx: crate::on_foot::OnFootCx, dt: f32) {
     crate::on_foot::tick(&mut cx, dt);
     crate::on_foot::remote_walkers(&mut cx);
 }
+
+/// OMSI's hint for what a passenger has just said (`TooCold_1`: "Passengers complain about
+/// the low temperature in your bus!"), from the game's language files
+/// (`Languages/<LANG>_basic*.olf`, `RL_PassDlg_<name>`): Omsi.exe shows them as the riders
+/// speak. None for what has no hint (a greeting).
+fn passenger_dialog(name: &str) -> Option<String> {
+    static TEXTS: std::sync::OnceLock<Option<omsi_content::language::Language>> = std::sync::OnceLock::new();
+    let texts = TEXTS.get_or_init(|| {
+        let lang = crate::settings::Settings::load().language;
+        let load = |lang: &str| {
+            let mut out: Option<omsi_content::language::Language> = None;
+            for dir in omsi_cfg::content_dirs("Languages") {
+                for file in ["basic", "basic_103", "basic_200"] {
+                    if let Ok(l) = omsi_content::language::Language::load(&dir.join(format!("{lang}_{file}.olf"))) {
+                        match out.as_mut() {
+                            Some(o) => o.merge(l),
+                            None => out = Some(l),
+                        }
+                    }
+                }
+            }
+            out
+        };
+        load(&lang).or_else(|| load("ENG"))
+    });
+    let t = texts.as_ref()?.strings.get(&format!("RL_PassDlg_{name}"))?.trim().trim_matches('"').replace("\"\"", "\"");
+    (!t.is_empty()).then_some(t)
+}
+

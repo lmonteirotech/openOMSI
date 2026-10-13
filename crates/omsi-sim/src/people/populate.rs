@@ -104,10 +104,20 @@ impl PeopleSim {
         // the destinations: the stops the trips from here go on to, as likely as people
         // get off there; each with the termini of the buses that go there
         let lines: Vec<(String, HashSet<String>)> = self.stop_targets.as_ref().and_then(|m| m.get(&id)).cloned().unwrap_or_default();
+        // (the weight of the stations the trips from here reach - by their objects, as
+        // Omsi.exe takes it from the trip's station record. Looked up by the label among the
+        // stops placed so far, every stop on a tile not loaded yet - and every one whose
+        // label is not its timetable name - weighed 0.5 whatever its cube said: people got
+        // off in numbers where the cube says nobody does, and fewer where many do, #1583)
+        let targets = self.stop_target_objects.as_ref().and_then(|m| m.get(&id));
         let weights: Vec<f32> = lines
             .iter()
             .map(|(n, _)| {
-                world.bus_stops().iter().find(|s| s.3.trim() == n.trim()).map(|s| world.stop_exit_weight(s.0)).unwrap_or(0.5)
+                let objects = targets.and_then(|t| t.get(n)).filter(|o| !o.is_empty());
+                match objects {
+                    Some(o) => o.iter().map(|k| world.stop_exit_weight(*k)).fold(0.0, f32::max),
+                    None => world.bus_stops().iter().find(|s| s.3.trim() == n.trim()).map(|s| world.stop_exit_weight(s.0)).unwrap_or(0.5),
+                }
             })
             .collect();
         let total: f32 = weights.iter().sum();
@@ -118,6 +128,7 @@ impl PeopleSim {
         };
         if debug_pax() {
             log::info!("stop {id} '{name}' at ({:.1}, {:.1}, {:.2}) heading {heading:.0}: {} waiting places, length {length}, side {side}, {} destinations", pos.x, pos.y, pos.z, spots.len(), dests.len());
+            log::info!("stop {id}: exit weights {:?}", lines.iter().zip(&weights).map(|((n, _), w)| format!("{n}={w}")).collect::<Vec<_>>());
         }
         let n = spots.len();
         // what the timetable calls it - its id when the timetable does not know it, as the

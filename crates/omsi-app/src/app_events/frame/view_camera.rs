@@ -327,6 +327,24 @@ impl App {
         if started || !inside_view {
             self.cam.cam_blend.carry = None;
         }
+        // the zoom glides with the camera: from the one drawn on the camera left to the one
+        // the camera taken keeps, on the same curve (it jumped at the first frame, #2306)
+        let zoom_now = zoom.unwrap_or(1.0);
+        if started && !entering {
+            self.cam.cam_blend.zoom_from = self.cam.cam_blend.zoom_drawn;
+        } else if !inside_view {
+            self.cam.cam_blend.zoom_from = None;
+        }
+        let drawn = match self.cam.cam_blend.zoom_from {
+            Some(z) => {
+                let z = if started { z } else { zoom_glide(z, zoom_now, dt) };
+                self.cam.cam_blend.zoom_from = ((z - zoom_now).abs() > 1e-3).then_some(z);
+                cam.fov_deg = (cam.fov_deg * z / zoom_now.max(0.01)).clamp(8.0, 120.0);
+                z
+            }
+            None => zoom_now,
+        };
+        self.cam.cam_blend.zoom_drawn = Some(drawn);
         if let Some(c) = self.cam.cam_blend.carry.as_mut() {
             c.apply(&mut cam);
             if !c.decay(dt) {
@@ -334,5 +352,28 @@ impl App {
             }
         }
         cam
+    }
+}
+
+/// The zoom one frame of `dt` closer to `to` on the cab camera glide's curve (`cam_approach`).
+fn zoom_glide(from: f32, to: f32, dt: f32) -> f32 {
+    to - (to - from) * crate::cam_approach::left_after(dt)
+}
+
+#[cfg(test)]
+mod zoom_glide_tests {
+    /// The zoom of the camera left glides to the camera taken's within the glide's time,
+    /// instead of jumping at its first frame (#2306).
+    #[test]
+    fn the_zoom_glides_to_the_camera_taken() {
+        let mut z = 0.5;
+        let mut prev = z;
+        for _ in 0..60 {
+            z = super::zoom_glide(z, 1.0, 1.0 / 60.0);
+            assert!(z > prev && z <= 1.0);
+            prev = z;
+        }
+        // a second: as good as there (e^-5 of the way left)
+        assert!((1.0 - z) < 0.01, "{z}");
     }
 }

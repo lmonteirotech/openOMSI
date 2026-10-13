@@ -67,7 +67,7 @@ impl App {
             _ => None,
         };
         let chooser_list = self.menus.admin_list.as_ref().unwrap_or(&self.menus.vehicle_list);
-        let (kind, head, preview) = crate::game_lists::menu_extras(self.menus.list_kind.as_ref(), self.menus.admin_list.as_deref(), self.menus.chooser, self.session.schedule.as_ref(), self.clock.time);
+        let (kind, head, preview) = crate::game_lists::menu_extras(self.menus.list_kind.as_ref(), self.menus.admin_list.as_deref(), self.menus.chooser, crate::duty_book::timetable(self), self.clock.time);
         let camera_tab = matches!(self.menus.list_kind, Some(ListKind::Options(t)) if Some(t) == tabs.as_ref().and_then(|(titles, _)| titles.iter().position(|x| x == omsi_ui::tr("Camera").as_ref())));
         let list = self.menus.chooser.map(|sel| ListView {
             kind,

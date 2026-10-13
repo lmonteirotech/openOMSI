@@ -616,6 +616,56 @@ pub fn decode(blocks: &[u8], width: u32, height: u32, format: Bc) -> Vec<u8> {
     rgba
 }
 
+/// The largest colour shift (luma-weighted squared error of the mean, 0..65025 scale) of a
+/// flat patch - texels of one exact colour, two or more in a block - in a block that holds
+/// three or more such patches over at least 12 of its 16 texels. `src` is the picture,
+/// `dec` its compressed blocks decoded. Such a block is a row of small colour swatches (an
+/// atlas whose handrails or buttons take their colour from two or three texels); four
+/// colours along one line are all a block can hold, so one swatch may turn into another
+/// colour altogether while the picture as a whole still measures well.
+pub fn worst_patch_shift(src: &[u8], dec: &[u8], width: u32, height: u32) -> f64 {
+    let (w, h) = (width as usize, height as usize);
+    let mut worst = 0.0f64;
+    for by in 0..h / 4 {
+        for bx in 0..w / 4 {
+            let at = |i: usize| ((by * 4 + i / 4) * w + bx * 4 + i % 4) * 4;
+            let (mut seen, mut patches, mut covered, mut block_worst) = (0u16, 0, 0, 0.0f64);
+            for i in 0..16 {
+                if seen & (1 << i) != 0 {
+                    continue;
+                }
+                let oi = at(i);
+                let (mut n, mut sum) = (0u32, [0u32; 3]);
+                for j in i..16 {
+                    let oj = at(j);
+                    if src[oj..oj + 3] == src[oi..oi + 3] {
+                        seen |= 1 << j;
+                        n += 1;
+                        for c in 0..3 {
+                            sum[c] += dec[oj + c] as u32;
+                        }
+                    }
+                }
+                if n >= 2 {
+                    patches += 1;
+                    covered += n;
+                    let e: f64 = (0..3)
+                        .map(|c| {
+                            let d = sum[c] as f64 / n as f64 - src[oi + c] as f64;
+                            d * d * WEIGHTS[c] as f64
+                        })
+                        .sum();
+                    block_worst = block_worst.max(e);
+                }
+            }
+            if patches >= 3 && covered >= 12 {
+                worst = worst.max(block_worst);
+            }
+        }
+    }
+    worst
+}
+
 /// Whether a DXT1 block has transparent pixels (three-colour mode with index 3 in use).
 pub fn bc1_block_has_alpha(blk: &[u8]) -> bool {
     let c0 = u16::from_le_bytes([blk[0], blk[1]]);

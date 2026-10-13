@@ -402,6 +402,13 @@ impl Mixer {
                 let _ = self.back.push(Back::Ended(v));
             }
         }
+        // (a NaN that got into the mix would stay in the reverb's lines for good and reach
+        // the device as a burst: dropped here)
+        for s in out.iter_mut() {
+            if !s.is_finite() {
+                *s = 0.0;
+            }
+        }
         if listener.reverb_mix > 0.001 && listener.reverb_time > 0.05 {
             self.reverb.process(out, ch, rate, listener.reverb_time.min(3.0), listener.reverb_mix.min(1.0));
         }
@@ -560,7 +567,7 @@ fn mix_voice(v: &mut Voice, out: &mut [f32], ch: usize, frames: usize, rate: u32
 /// shift from how fast the distance to the listener changes (the bus's own sounds move with
 /// the listener and keep their pitch), when `doppler` (OMSI's `sound_doppler`) is on.
 pub(super) fn apply_params(v: &mut Voice, params: VoiceParams, now: std::time::Instant, listener: Vec3, doppler: bool) {
-    if let (Some(p), true) = (params.position, params.doppler && doppler) {
+    if let (Some(p), true) = (params.position.filter(|p| p.is_finite()), params.doppler && doppler) {
         let dist = (p - listener).length();
         let (last, at, factor) = v.doppler;
         let mut f = factor;

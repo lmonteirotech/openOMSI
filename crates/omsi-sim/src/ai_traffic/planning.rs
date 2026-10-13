@@ -670,6 +670,19 @@ impl TrafficSim {
             skip("it waits before a light or a junction".into());
             return;
         }
+        // nor over a solid centre line (`[rule] overtaking_prohib`) round anything but a
+        // parked car: the queue behind a bus at its stop waited for it, it did not cross the
+        // double line (#2048)
+        let prohibited = way
+            .iter()
+            .take_while(|w| w.1 < pass_len + real)
+            .any(|w| self.net.lanes[w.0].no_overtaking);
+        // (a bus at its stop and the player's bus standing count as parked to the rest of
+        // this; not here)
+        if prohibited && !sc.parked_ahead {
+            skip("no overtaking here".into());
+            return;
+        }
         // nor where the road ends (the queue at the end of the network only waits to be taken
         // away: a car that went round it drove into its head)
         if let Some(&(last, d)) = way.last() {

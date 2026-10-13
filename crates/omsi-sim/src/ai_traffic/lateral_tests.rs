@@ -600,3 +600,55 @@ fn a_car_goes_round_the_players_bus_standing_well_before_a_red_light() {
     }
     assert!(went_round, "it does not go round the bus standing 60 m before the light");
 }
+
+/// #2048: over a solid centre line (`[rule] overtaking_prohib`) a car does not go round a
+/// vehicle that stands in its lane and will move on; it still goes round a parked car.
+#[test]
+fn no_pass_over_a_solid_centre_line_but_round_a_parked_car() {
+    let f = Fixture::new();
+    // the player's bus standing in the lane (not at a light): it will move on
+    let passes_standing = |prohibited: bool| {
+        let mut net = two_way(3.5, None);
+        net.lanes[0].no_overtaking = prohibited;
+        let mut t = traffic(&f, net);
+        let me = add_car(&mut t, &f, 0, 40.0, 0xa0a, Some(6.0));
+        let bus: PlayerBox = (DVec3::new(0.0, 106.0, 0.0), 0.0, 6.0, 1.25, 0.0);
+        let mut passed = false;
+        for _ in 0..(60.0 / DT) as usize {
+            t.tick(DT, Some(bus));
+            passed |= car(&t, me).is_some_and(|c| c.passing.is_some());
+        }
+        passed
+    };
+    assert!(passes_standing(false), "without the rule it never went round the standing bus");
+    assert!(!passes_standing(true), "it went over the solid line round a standing bus");
+    let mut net = two_way(3.5, None);
+    net.lanes[0].no_overtaking = true;
+    let (mut t, me) = parked_scene(&f, net);
+    assert!(passes_parked(&mut t, me, 30.0), "it does not go round the parked car");
+}
+
+/// #2424: on a road of two lanes that ends (the map's edge) the cars drive straight on to
+/// the end and are taken off there - no lane changes, nobody steering off the road.
+#[test]
+fn cars_drive_straight_to_the_end_of_a_two_lane_road() {
+    let f = Fixture::new();
+    for one_way in [true, false] {
+    // two lanes one way, or a lane each way (the oncoming one starting where this one ends)
+    let net = if one_way { net_of(vec![street(0.0, 0.0, 0.0, 300.0), street(3.5, 0.0, 0.0, 300.0)], &[(0, 1)]) } else { two_way(3.5, None) };
+    let mut t = traffic(&f, net);
+    let ids: Vec<u64> = (0..6).map(|k| add_car(&mut t, &f, if one_way { k % 2 } else { 0 }, 20.0 + 25.0 * k as f32, 0xc00 + k as u64, Some(10.0))).collect();
+    let mut worst: f32 = 0.0;
+    let mut changed = false;
+    for _ in 0..(60.0 / DT) as usize {
+        t.tick(DT, None);
+        for c in t.cars.iter().filter(|c| ids.contains(&c.id)) {
+            worst = worst.max(c.state.lateral.abs());
+            changed |= c.state.change.is_some();
+        }
+    }
+    assert!(!changed, "a car changed lanes at the end of the road");
+    assert!(worst < 0.5, "a car steered {worst:.2} m off its lane");
+    assert!(t.cars.iter().all(|c| !ids.contains(&c.id)), "cars still stand at the end");
+    }
+}

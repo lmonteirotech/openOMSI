@@ -134,10 +134,8 @@ pub struct Settings {
     pub nav_arrows: bool,
     /// The other (AI) vehicles as dots on the navigator's and the city map.
     pub nav_ai: bool,
-    /// The map's own surface (water, green land, rivers, rail) under the roads of the navigator and the city map.
-    pub nav_surface: bool,
-    /// The light look of the navigator's maps.
-    pub nav_light: bool,
+    /// The map's package's surface under the roads of the navigator and the city map, and their light look.
+    pub nav_surface: bool, pub nav_light: bool,
     /// The driver may get up from the seat and walk about (Ctrl+Shift+G).
     pub get_up: bool,
     /// A summary of each trip of a duty as it ends: its stops with their times as planned and
@@ -281,8 +279,9 @@ pub struct Settings {
     /// A gamepad nobody set up buttons for drives the cabin with its default buttons
     /// (`gamepad_profile`).
     pub pad_buttons: bool,
-    /// With a wheel steering, Left/Right switch the interior cameras as without one, instead
-    /// of turning the head (OMSI's glance), #1345.
+    /// With a wheel steering, Left/Right switch the interior cameras as without one (as in
+    /// Omsi.exe, whose view_interiorcam keys, 0x706a3c, ask for no controller), instead of
+    /// turning the head (a glance), #1345; on by default since #2164.
     pub arrows_switch_cams: bool,
     /// Game controllers switched off, by name (`|` between them).
     pub ctrl_off: String,
@@ -343,6 +342,11 @@ pub struct Settings {
     /// steers without the frame's delay, and the window's edges are the lock, as in OMSI
     /// (#1948).
     pub mouse_hold: bool,
+    /// The mouse steering works the pedals too (up the throttle, down the brake), as in
+    /// Omsi.exe; off, it only steers and the pedals stay on the keys or a controller (#1704).
+    pub mouse_pedals: bool,
+    /// How fast the throttle and brake keys push their pedals, against OMSI's (1), #1371.
+    pub key_pedal_speed: f32,
     /// How fast the view turns for the mouse's way while looking round (1 = Omsi.exe's
     /// field of view / 78.75 degrees per pixel in the views of the bus; #859).
     pub look_sens: f32,
@@ -439,7 +443,7 @@ impl Settings {
     }
     /// The defaults of a computer.
     fn desktop() -> Self {
-        Self { msaa: 4, anisotropy: 8, ssao: true, shadows: true, shadow_size: 2048, shadow_blobs: true, navigator: true, ui_opacity: 0.85, notes: true, ui_scale: 1.0, ui_scale_window: true, navigator_corner: "bottom-left".into(), boarding: "auto".into(), passenger_animation: "enhanced".into(), units: "metric".into(), photo_mode: "simple".into(), character_models: "original".into(), standing_chance: 0.05, ambient: true, vol_ambient: 0.8, radio_fx: Default::default(), detail_textures: true, exact_fare: true, enhanced: false, graphics: "vanilla_plus".into(), triple: Default::default(), triple_span: true, triple_hud_center: true, vr: false, vr_scale: 0.65, vr_head_smoothing_ms: 0.0, vr_mirror_rate: 16.0, vr_desktop_mirror: true, fullscreen: false, vsync: true, volume: 0.6, drive_keys: "simple".into(), touch_door_mode: "standard".into(), post_aa: "fxaa".into(), render_scale: 0.0, language: "ENG".into(), pax_voices: "all".into(), nav_arrows: false, nav_ai: true, nav_surface: true, nav_light: false, get_up: false, trip_summary: true, texture_compression: true, gpu_texture_compression: true, texture_memory: 0, auto_clutch: true, momentary_gears: false, auto_shift: false, min_obj_size: 0.013, max_obj_dist: -1.0, max_fps: 0, chat: true, chat_size: 1.0, tooltips: true, name_tags: true, show_fps: false, perf_overlay: "off".into(), clouds: true, cloud_quality: "high".into(), rain_quality: "high".into(), windy_trees: true, pax_density: 1.0, vol_ai: 1.0, vol_scenery: 1.0, mirror_size: 256, mirror_hud: 0, mirror_hud_every_frame: false, mirror_refresh: "full".into(), mirror_quality: "standard".into(), doppler: true, driver: true, maintenance: 0, ai_unsched_factor: 1.0, ai_max_scheduled: 0, ai_max_parked: 0, ai_max_humans: 200, ai_wait_timed_stops_only: false, collision_vehicles: true, collision_objects: true, collision_pedestrians: true, head_movement: true, driverview_smooth: true, hands_in_cab: false, alt_view: true, precision_zoom: false, time_speed: 1.0, time_sync: false, metar_sync: false, metar_station: String::new(), machine_translation: false, shadow_casters: "all".into(), ctrl_deadzone: 0.0, right_stick_look: true, pad_steer_smooth: 120.0, pad_steer_linear: false, pad_steer_speed: 2.0, pad_deadzone: 0.08, pad_type: "auto".into(), pad_buttons: true, arrows_switch_cams: false, ctrl_off: String::new(), steering_linear: false, old_steering: false, red_steer_spd: false, reflections: true, led_glow: 6, led_mips: 1.3, night_brightness: 0.0, mouse_sens: 1.0, mouse_pedal_strength: 1.0, graphics_api: "auto".into(), ff_invert: false, ff_enabled: true, ff_road_vib: 1.0, ff_engine_vib: 1.0, ff_fade: 0.28, brake_hold: true, mouse_steering: false, mouse_right_off: false, mouse_smooth: true, mouse_hold: true, look_sens: 1.0, look_smoothing_ms: 0.0, blinker_cancel: true, wheel_range: 900.0, wheel_lock: 0.0, fov: 0.0, camera_collision: true, steer_look: false, steer_look_angle: 30.0, steer_look_response: 0.25, head_idle: 0.0, head_idle_pace: 1.0, pedal_throttle: 1.0, pedal_brake: 1.0, seat: [0.0; 3], seat_pitch_deg: 0.0, head_tracking: false, head_tracking_port: 4242, head_tracking_invert: String::new(), head_tracking_yaw_sens: 100.0, head_tracking_pitch_sens: 100.0, head_tracking_roll_sens: 100.0, head_tracking_x_sens: 100.0, head_tracking_y_sens: 100.0, head_tracking_z_sens: 100.0, head_tracking_invert_yaw: false, head_tracking_invert_pitch: false, head_tracking_invert_roll: false, head_tracking_invert_x: false, head_tracking_invert_y: false, head_tracking_invert_z: false, discord_status: true, discord_app_id: String::new(), voice_chat: true, info_bar: false }
+        Self { msaa: 4, anisotropy: 8, ssao: true, shadows: true, shadow_size: 2048, shadow_blobs: true, navigator: true, ui_opacity: 0.85, notes: true, ui_scale: 1.0, ui_scale_window: true, navigator_corner: "bottom-left".into(), boarding: "auto".into(), passenger_animation: "enhanced".into(), units: "metric".into(), photo_mode: "simple".into(), character_models: "original".into(), standing_chance: 0.05, ambient: true, vol_ambient: 0.8, radio_fx: Default::default(), detail_textures: true, exact_fare: true, enhanced: false, graphics: "vanilla_plus".into(), triple: Default::default(), triple_span: true, triple_hud_center: true, vr: false, vr_scale: 0.65, vr_head_smoothing_ms: 0.0, vr_mirror_rate: 16.0, vr_desktop_mirror: true, fullscreen: false, vsync: true, volume: 0.6, drive_keys: "simple".into(), touch_door_mode: "standard".into(), post_aa: "fxaa".into(), render_scale: 0.0, language: "ENG".into(), pax_voices: "all".into(), nav_arrows: false, nav_ai: true, nav_surface: true, nav_light: false, get_up: false, trip_summary: true, texture_compression: true, gpu_texture_compression: true, texture_memory: 0, auto_clutch: true, momentary_gears: false, auto_shift: false, min_obj_size: 0.013, max_obj_dist: -1.0, max_fps: 0, chat: true, chat_size: 1.0, tooltips: true, name_tags: true, show_fps: false, perf_overlay: "off".into(), clouds: true, cloud_quality: "high".into(), rain_quality: "high".into(), windy_trees: true, pax_density: 1.0, vol_ai: 1.0, vol_scenery: 1.0, mirror_size: 256, mirror_hud: 0, mirror_hud_every_frame: false, mirror_refresh: "full".into(), mirror_quality: "standard".into(), doppler: true, driver: true, maintenance: 0, ai_unsched_factor: 1.0, ai_max_scheduled: 0, ai_max_parked: 0, ai_max_humans: 200, ai_wait_timed_stops_only: false, collision_vehicles: true, collision_objects: true, collision_pedestrians: true, head_movement: true, driverview_smooth: true, hands_in_cab: false, alt_view: true, precision_zoom: false, time_speed: 1.0, time_sync: false, metar_sync: false, metar_station: String::new(), machine_translation: false, shadow_casters: "all".into(), ctrl_deadzone: 0.0, right_stick_look: true, pad_steer_smooth: 120.0, pad_steer_linear: false, pad_steer_speed: 2.0, pad_deadzone: 0.08, pad_type: "auto".into(), pad_buttons: true, arrows_switch_cams: true, ctrl_off: String::new(), steering_linear: false, old_steering: false, red_steer_spd: false, reflections: true, led_glow: 6, led_mips: 1.3, night_brightness: 0.0, mouse_sens: 1.0, mouse_pedal_strength: 1.0, graphics_api: "auto".into(), ff_invert: false, ff_enabled: true, ff_road_vib: 1.0, ff_engine_vib: 1.0, ff_fade: 0.28, brake_hold: true, mouse_steering: false, mouse_right_off: false, mouse_smooth: true, mouse_hold: true, mouse_pedals: true, key_pedal_speed: 1.0, look_sens: 1.0, look_smoothing_ms: 0.0, blinker_cancel: true, wheel_range: 900.0, wheel_lock: 0.0, fov: 0.0, camera_collision: true, steer_look: false, steer_look_angle: 30.0, steer_look_response: 0.25, head_idle: 0.0, head_idle_pace: 1.0, pedal_throttle: 1.0, pedal_brake: 1.0, seat: [0.0; 3], seat_pitch_deg: 0.0, head_tracking: false, head_tracking_port: 4242, head_tracking_invert: String::new(), head_tracking_yaw_sens: 100.0, head_tracking_pitch_sens: 100.0, head_tracking_roll_sens: 100.0, head_tracking_x_sens: 100.0, head_tracking_y_sens: 100.0, head_tracking_z_sens: 100.0, head_tracking_invert_yaw: false, head_tracking_invert_pitch: false, head_tracking_invert_roll: false, head_tracking_invert_x: false, head_tracking_invert_y: false, head_tracking_invert_z: false, discord_status: true, discord_app_id: String::new(), voice_chat: true, info_bar: false }
     }
 }
 
@@ -706,6 +710,8 @@ impl Settings {
                 "mouse_right_off" => s.mouse_right_off = b(v),
                 "mouse_smooth" => s.mouse_smooth = b(v),
                 "mouse_hold" => s.mouse_hold = b(v),
+                "mouse_pedals" => s.mouse_pedals = b(v),
+                "key_pedal_speed" => s.key_pedal_speed = v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.25, 2.0)).unwrap_or(s.key_pedal_speed),
                 "mouse_pedal_strength" => {
                     s.mouse_pedal_strength = v
                         .parse::<f32>()

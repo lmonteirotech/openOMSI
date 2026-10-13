@@ -105,6 +105,8 @@ impl App {
         } else {
             (found, hand)
         };
+        // a ticket block or the change on the tray: they are clicked too (#2399)
+        let hand = hand || (found.is_none() && self.over_desk_money());
         self.menus.hover_hand = hand;
         match found {
             Some((name, true)) => {
@@ -149,6 +151,20 @@ impl App {
             0
         };
         self.set_cursor_kind(kind);
+    }
+
+    /// Whether the cursor is over a tear-off ticket block or the change lying on the tray of
+    /// the player's bus, which a click works as `left_now` does.
+    fn over_desk_money(&self) -> bool {
+        if !matches!(self.view.as_str(), "driver" | "pax") {
+            return false;
+        }
+        let (Some(p), Some(h), Some(cam), Some(s)) = (self.player.as_ref(), self.session.humans.as_ref(), self.camera.as_ref(), self.gfx.surface.as_ref()) else {
+            return false;
+        };
+        let (o, d, _) = self.cockpit_cursor_ray(cam, (s.config.width, s.config.height));
+        self.gfx.sim_view.people.ticket_blocks.as_ref().is_some_and(|b| b.hit(o, d, &p.vehicle).is_some())
+            || h.sim.money.as_ref().is_some_and(|m| crate::money::change_hit(m, o, d, &p.vehicle).is_some())
     }
 
     /// Show the mouse cursor `kind` (0 arrow, 1 pointing hand, 2 cross, 3 arrows, 4 closed hand).

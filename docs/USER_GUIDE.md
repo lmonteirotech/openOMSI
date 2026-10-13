@@ -250,7 +250,16 @@ nothing - what virtual bus companies ask their drivers for.
 The launcher is a program of its own beside the game, `openomsi-launcher-app` (a Tauri window,
 `launcher/`, see its README): `openomsi` started without arguments opens it, and where it is
 missing - or its window cannot open, for want of WebView2 on an old Windows (the game offers
-Microsoft's installer) or of WebKitGTK 4.1 on Linux - the game says so and where it belongs.
+Microsoft's installer) or of WebKitGTK 4.1 on Linux - the game says so and where it belongs
+(on Linux in a dialog of the desktop as well as in the terminal).
+
+**Linux needs WebKitGTK 4.1** for the launcher's window: `libwebkit2gtk-4.1-0` on Debian and
+Ubuntu, `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch. **SteamOS** (Steam Deck) does not
+include it and its system is read-only: in Desktop Mode open Konsole and run
+`sudo steamos-readonly disable`, `sudo pacman -S webkit2gtk-4.1`, `sudo steamos-readonly enable`
+(a password must be set first with `passwd`; when pacman complains about keys, run
+`sudo pacman-key --init` and `sudo pacman-key --populate archlinux holo` first; a SteamOS
+update can remove the package again, then run the same commands once more).
 On Android the same page shows in a web view over the game's window; iPhone, iPad and the Mac
 app have a launcher of their own (SwiftUI). The Drive page shows the chosen bus as a picture
 **drawn by the game's renderer** (the game program runs beside the launcher as its helper,

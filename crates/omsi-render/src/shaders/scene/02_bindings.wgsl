@@ -5,9 +5,6 @@
 // hidden surface removal as well - for everything it draws, and the heavy shading then
 // ran for every covered layer of the city, not once per pixel.
 override ALPHA_TEST: bool = true;
-// Fully invisible pixels of depth-writing blends must leave depth untouched.
-// Opaque and depth-disabled pipelines compile this override out.
-override BLEND_DEPTH: bool = false;
 // Multisampled cutout pipelines can turn filtered alpha directly into sample coverage.
 override ALPHA_TO_COVERAGE: bool = false;
 @group(0) @binding(5) var t_shadow: texture_depth_2d;

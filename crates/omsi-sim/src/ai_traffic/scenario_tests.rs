@@ -54,7 +54,7 @@ pub(super) fn street(start: DVec3, heading: f64, length: f64) -> crate::traffic:
 /// A junction object (one key, a path per direction) where four straight roads meet,
 /// 150 m of road before each of its paths and `exit` m after: lanes 0..4 the roads in
 /// (from the south, west, north, east), 4..8 the junction's paths, 8..12 the roads out.
-/// Without priorities: everybody gives way to the right.
+/// Without priorities: whoever comes first goes first.
 pub(super) fn crossroads(exit: f64) -> Network {
     let half = 12.0;
     let o = 1.75;

@@ -111,6 +111,15 @@ impl App {
         SwitchCx::of(&mut self.parts()).switch_vehicle();
     }
 
+    /// Take the wheel of the `k`-th placed vehicle (`game_lists::ListKind::SwitchTo`): the
+    /// others keep their turn after it.
+    pub(crate) fn switch_vehicle_to(&mut self, k: usize) {
+        if k < self.session.placed.len() {
+            self.session.placed.rotate_left(k);
+        }
+        self.switch_vehicle();
+    }
+
     /// Put the bus on the street nearest the world point `at` (the city map's Ctrl+click),
     /// facing along it.
     pub(crate) fn place_bus_at(&mut self, at: glam::DVec2) {

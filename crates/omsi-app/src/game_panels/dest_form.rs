@@ -26,6 +26,8 @@ impl DestForm {
             text("Destination, two lines", 13.0, Weight::Medium),
             input("line1", &self.lines[0], "First line", 60),
             input("line2", &self.lines[1], "Second line (may stay empty)", 60),
+            // (the depot file's destinations to pick from, as OMSI's form lists them, #2219)
+            grow_row(vec![button("list", "Choose from the depot file", Some("view_list"))]),
             grow_row(vec![button("clear", "Clear display", Some("delete")), button("select", "Select", Some("check")), button("close", "Close", Some("close"))]),
             note(self.said.as_deref().unwrap_or("A destination of the depot file is found by its name; any other text is shown as it is typed.")),
         ];
@@ -75,6 +77,13 @@ pub(crate) fn named(hof: &omsi_vehicle::Hof, lines: &[String; 2]) -> Option<usiz
 pub(crate) fn click(app: &mut crate::App, id: &str) {
     match id {
         "close" => app.menus.game_panels.dest = None,
+        "list" => {
+            app.menus.game_panels.dest = None;
+            app.open_list(crate::game_lists::ListKind::Destinations);
+            if app.menus.chooser.is_some() && app.menus.game_menu.is_none() {
+                app.open_game_menu();
+            }
+        }
         "select" | "clear" => {
             let Some(form) = app.menus.game_panels.dest.clone() else { return };
             let clear = id == "clear";

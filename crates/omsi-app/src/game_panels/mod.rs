@@ -295,9 +295,11 @@ impl crate::App {
 
     /// Alt pressed and let go with nothing else between: OMSI 2's quick menu opens (or
     /// closes). Every key comes through here, pressed and released, before its own work.
+    /// (The key is OMSI's `open_menue`, "Alt (both)" in its keyboard.cfg: moved to another
+    /// Shift, Ctrl or Alt key, that key's tap opens it; moved to any other key or cleared, a
+    /// tap opens nothing - that key is a [game] key then, #2392.)
     pub(crate) fn alt_tap(&mut self, code: winit::keyboard::KeyCode, pressed: bool, repeat: bool) {
-        use winit::keyboard::KeyCode;
-        let alt = matches!(code, KeyCode::AltLeft | KeyCode::AltRight);
+        let alt = quick_menu_tap_key(&self.input.game_keys, code);
         let gp = &mut self.menus.game_panels;
         match (alt, pressed) {
             (true, true) if !repeat => gp.alt_alone = true,
@@ -311,8 +313,51 @@ impl crate::App {
         }
     }
 
+    /// `open_menue` (the quick menu) from a key that is not a Shift, Ctrl or Alt key.
+    pub(crate) fn quick_menu_key(&mut self) {
+        if self.menus.game_menu.is_none() && self.menus.chooser.is_none() && self.photo.is_none() && !self.vr_active() {
+            quick_menu::toggle(self);
+        }
+    }
+
     /// A mouse button went down: Alt held with it is no tap.
     pub(crate) fn alt_tap_spoilt(&mut self) {
         self.menus.game_panels.alt_alone = false;
+    }
+}
+
+/// Whether `code` is the key whose tap opens the quick menu: keyboard.cfg's `open_menue`
+/// where it is a Shift, Ctrl or Alt key (either side's code, or one side's), Alt where the
+/// file has no entry for it.
+pub(crate) fn quick_menu_tap_key(game_keys: &[omsi_content::KeyBinding], code: winit::keyboard::KeyCode) -> bool {
+    let Some(both) = omsi_input::keys::both_code(code) else { return false };
+    match game_keys.iter().find(|b| b.action.eq_ignore_ascii_case("open_menue")) {
+        None => both == omsi_input::keys::ALT_BOTH,
+        Some(b) => b.scan_code == both || omsi_input::keys::dik_code(code) == Some(b.scan_code),
+    }
+}
+
+#[cfg(test)]
+mod quick_menu_key_tests {
+    use super::quick_menu_tap_key;
+    use omsi_content::KeyBinding;
+    use winit::keyboard::KeyCode::*;
+
+    /// The quick menu's key moved away from Alt: Alt no longer opens it (#2392).
+    #[test]
+    fn the_quick_menu_follows_open_menue() {
+        let kb = |k: i32| vec![KeyBinding { action: "open_menue".into(), scan_code: k, modifier: 0 }];
+        assert!(quick_menu_tap_key(&[], AltLeft));
+        assert!(quick_menu_tap_key(&kb(92), AltRight));
+        assert!(!quick_menu_tap_key(&kb(92), ShiftLeft));
+        assert!(!quick_menu_tap_key(&kb(92), KeyA));
+        // moved to the right Ctrl, to F10, cleared
+        assert!(quick_menu_tap_key(&kb(157), ControlRight));
+        assert!(!quick_menu_tap_key(&kb(157), ControlLeft));
+        assert!(!quick_menu_tap_key(&kb(157), AltLeft));
+        assert!(!quick_menu_tap_key(&kb(68), AltLeft));
+        assert!(!quick_menu_tap_key(&kb(0), AltLeft));
+        // Shift (both)
+        assert!(quick_menu_tap_key(&kb(90), ShiftRight));
     }
 }

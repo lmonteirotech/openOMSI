@@ -106,11 +106,24 @@ pub(crate) fn run_offscreen(
     crate::frame_stages::log_order();
     let mut run = Offscreen::setup(args, out, lan_off, remotes_off)?;
     let mut steps = 0;
+    // OMSI_PROFILE: the steps that took long (a stutter the window would show), by name
+    let profile = omsi_cfg::flags::OMSI_PROFILE.is_set();
+    let mut slow = 0usize;
     for i in 0..run.total_frames {
         steps += 1;
-        if !run.step(i)? {
+        let t = std::time::Instant::now();
+        let go_on = run.step(i)?;
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        if profile && i > 0 && ms > 50.0 {
+            slow += 1;
+            log::info!("profile: offscreen step {i} took {ms:.0} ms");
+        }
+        if !go_on {
             break;
         }
+    }
+    if profile {
+        log::info!("profile: {slow} offscreen steps over 50 ms of {steps}");
     }
     run.finish_recording()?;
     run.log_profile(steps);

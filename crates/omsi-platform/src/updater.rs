@@ -277,11 +277,15 @@ pub fn agent() -> ureq::Agent {
     // (a read waits 30 s at most - a stalled download goes on with a range request, so a
     // short wait costs nothing; the connection gets 20 s, enough for a slow line or a
     // resolver that tries IPv6 first)
-    ureq::AgentBuilder::new()
+    let b = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(20))
         .timeout_read(std::time::Duration::from_secs(30))
-        .user_agent(&format!("openOMSI/{} (updater)", current_version()))
-        .build()
+        .user_agent(&format!("openOMSI/{} (updater)", current_version()));
+    // (through the proxy the system is set to use, #1000)
+    match crate::proxy::system_proxy().and_then(|p| ureq::Proxy::new(&p).map_err(|e| log::warn!("network: the proxy {p} cannot be used: {e}")).ok()) {
+        Some(proxy) => b.proxy(proxy).build(),
+        None => b.build(),
+    }
 }
 
 /// How often a request is tried before it counts as failed, and the pauses between.

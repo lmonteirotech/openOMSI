@@ -85,7 +85,26 @@ impl Schedule {
             out.push((t, s));
         }
         if let Some(cars) = &c.train {
-            out.extend(cars.iter().skip(1).map(|(t, _)| (t.clone(), None)));
+            // Every vehicle of the train as `spawn_new_bus` and `turn_train` draw it: the
+            // further cars with the vehicles of their units (bogies, the second half of a
+            // twin car) unpainted, and - for a trip that runs the train turned round, or
+            // when it is turned for its next trip - its last vehicle leading in the train's
+            // paint. Only the lead and its own chain were read ahead, so an S-Bahn's other
+            // halves were built on the frame it appeared, and again after every quiet
+            // spell had let them go (#2365, #2464).
+            let mut all: Vec<Arc<VehicleType>> = vec![c.ty.clone()];
+            all.extend(traffic.trailer_chain(&c.ty).into_iter().map(|(t, _)| t));
+            for (t, rev) in cars.iter().skip(1) {
+                all.extend(traffic.coupled_chain(t, *rev, false).into_iter().map(|(t, _)| t));
+                all.push(t.clone());
+                all.extend(traffic.coupled_chain(t, *rev, true).into_iter().map(|(t, _)| t));
+            }
+            for t in all {
+                out.push((t.clone(), None));
+                if c.scheme.is_some() {
+                    out.push((t, c.scheme));
+                }
+            }
         }
         out
     }

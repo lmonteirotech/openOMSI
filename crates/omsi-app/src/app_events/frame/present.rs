@@ -115,13 +115,20 @@ impl App {
         let (path, include_touch) = shot;
         // the photo mode: its developed photo (stretched to the window) under its panel
         let developed = self.photo.as_ref().filter(|ph| ph.render.showing_photo()).and_then(|ph| ph.shown()).map(|(w, h, px)| crate::photo::stretch(w, h, px, s.config.width, s.config.height));
-        match developed.map(Ok).unwrap_or_else(|| r.render_to_image(
+        // a player's screenshot is the world without the interface over it, as OMSI's
+        // (#1265); the input script's pictures keep it for the visual tests
+        let hud = (!include_touch).then(|| std::mem::take(&mut scene.overlays));
+        let picture = developed.map(Ok).unwrap_or_else(|| r.render_to_image(
             scene,
             s.config.width,
             s.config.height,
             cam,
             lighting,
-        )) {
+        ));
+        if let Some(hud) = hud {
+            scene.overlays = hud;
+        }
+        match picture {
             Ok(mut px) => match {
                 // (with the on-screen controls, when there are)
                 if let Some(over) = self.shell.picture_for_shot(r, s.config.width, s.config.height) {

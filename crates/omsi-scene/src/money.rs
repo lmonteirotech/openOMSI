@@ -57,19 +57,43 @@ pub fn sync(m: &mut Money, renderer: &Renderer, scene: &mut Scene, bus: &Vehicle
         renderer.set_params(scene, inst, &[], false, &[]);
     }
     let rot = bus.body_rotation();
-    let mesh_of = |name: &str| -> Mat4 {
-        let defs = &bus.ty.model.meshes;
-        bus.ty
-            .meshes
-            .iter()
-            .rposition(|m| defs.get(m.def_index).and_then(|d| d.mesh_ident.as_deref()).is_some_and(|n| n.trim().eq_ignore_ascii_case(name.trim())))
-            .and_then(|i| bus.mesh_transforms.get(i).copied())
-            .unwrap_or(Mat4::IDENTITY)
-    };
     for (inst, local, _, _, parent) in &m.placed {
-        let on = parent.as_deref().map(mesh_of).unwrap_or(Mat4::IDENTITY);
+        let on = parent.as_deref().map(|n| mesh_of(bus, n)).unwrap_or(Mat4::IDENTITY);
         renderer.set_transform(scene, *inst, bus.position, rot * on * *local);
     }
+}
+
+/// The transform of the bus's mesh named `name` (its `[mesh_ident]`) in the bus frame.
+fn mesh_of(bus: &VehicleInstance, name: &str) -> Mat4 {
+    let defs = &bus.ty.model.meshes;
+    bus.ty
+        .meshes
+        .iter()
+        .rposition(|m| defs.get(m.def_index).and_then(|d| d.mesh_ident.as_deref()).is_some_and(|n| n.trim().eq_ignore_ascii_case(name.trim())))
+        .and_then(|i| bus.mesh_transforms.get(i).copied())
+        .unwrap_or(Mat4::IDENTITY)
+}
+
+/// The coin of the change lying on the tray a ray from `origin` along `dir` points at
+/// (its place in `Money::placed`), the nearest: within 2 cm of a coin's middle, as near
+/// as a coin is wide. A click on it picks it up again, as in Omsi.exe (#1354, #2399: the
+/// coins could not be clicked).
+pub fn change_hit(m: &Money, origin: DVec3, dir: Vec3, bus: &VehicleInstance) -> Option<usize> {
+    let rot = bus.body_rotation();
+    let o = (origin - bus.position).as_vec3();
+    let dir = dir.normalize_or_zero();
+    m.placed
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.3)
+        .filter_map(|(k, (_, local, _, _, parent))| {
+            let on = parent.as_deref().map(|n| mesh_of(bus, n)).unwrap_or(Mat4::IDENTITY);
+            let c = (rot * on * *local).transform_point3(Vec3::ZERO);
+            let t = (c - o).dot(dir);
+            (t > 0.0 && t < 3.0 && (o + dir * t).distance(c) < 0.02).then_some((k, t))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|h| h.0)
 }
 
 /// The tear-off ticket blocks of a bus without a ticket printer: the ticket pack's
@@ -120,6 +144,29 @@ impl TicketBlocks {
         for (inst, local, _, _) in &self.blocks {
             renderer.set_transform(scene, *inst, bus.position, rot * *local);
         }
+    }
+
+    /// Take the blocks out of the picture for good: the bus they hung in is gone, or another
+    /// set replaces them. Left in the scene they stood where that bus last was - in the air
+    /// over the road, with no bus round them (#2340, #2399).
+    pub fn remove(&self, renderer: &Renderer, scene: &mut Scene) {
+        for (inst, ..) in &self.blocks {
+            renderer.remove_instance(scene, *inst);
+        }
+    }
+
+    /// Where each block is drawn (its ticket type and the middle of its mesh, from the bus's
+    /// position in world axes): for tests that aim the mouse at them.
+    pub fn centres(&self, bus: &VehicleInstance) -> Vec<(usize, Vec3)> {
+        let rot = bus.body_rotation();
+        self.blocks
+            .iter()
+            .filter(|b| !b.3.positions.is_empty())
+            .map(|(_, local, n, data)| {
+                let c = data.positions.iter().copied().sum::<Vec3>() / data.positions.len() as f32;
+                (*n, (rot * *local).transform_point3(c))
+            })
+            .collect()
     }
 
     /// The ticket type of the block a ray from `origin` along `dir` hits first.

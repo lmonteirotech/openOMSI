@@ -540,6 +540,13 @@ impl App {
                     self.input.dragging = false;
                     return;
                 }
+                // a coin of the change on the tray: picked up again
+                if let Some((m, k)) = self.session.humans.as_mut().and_then(|h| h.sim.money.as_mut()).and_then(|m| crate::money::change_hit(m, o, d, &p.vehicle).map(|k| (m, k))) {
+                    log::info!("a coin of the change picked up again");
+                    m.take_coin(k);
+                    self.input.dragging = false;
+                    return;
+                }
                 self.input.dragging = p
                     .click(o, d, spread)
                     .is_some();

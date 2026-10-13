@@ -278,8 +278,17 @@ pub fn look_axis(v: f32) -> f32 {
 pub fn gamepad_steering(x: f32, kmh: f32) -> f32 {
     let x = x.clamp(-1.0, 1.0);
     let curve = x * x.abs();
-    let reach = 1.0 / (1.0 + (kmh.abs() - 10.0).max(0.0) / 20.0);
-    curve * reach
+    curve * gamepad_reach(kmh)
+}
+
+/// The share of the lock a gamepad's stick reaches at `kmh` (see [`gamepad_steering`]); the
+/// hand's pace towards the stick's place shrinks with it as well, so that the stick pushed
+/// all the way takes the same time to turn the wheel at any speed - at one pace the wheel
+/// swung to its (smaller) place at speed four times as quickly, and a bus that answers a
+/// turn of its wheel the more the faster it goes darted at the smallest push (#2014).
+pub fn gamepad_reach(kmh: f32) -> f32 {
+    let v = if kmh.is_finite() { kmh.abs() } else { 0.0 };
+    1.0 / (1.0 + (v - 10.0).max(0.0) / 20.0)
 }
 
 fn mapped_device_is_gamepad(mapped: bool, force_feedback_wheel: bool) -> bool {

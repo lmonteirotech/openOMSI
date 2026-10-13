@@ -847,6 +847,10 @@ impl Ui {
     /// value), `i` information.
     pub(super) fn draw_settings(&mut self, r: &Renderer, scene: &mut Scene, f: &Frame, sel: usize, items: &[(&str, &str)]) {
         let s = menu_scale(f);
+        // (a held seat slider: the window is drawn as always - its places stay where they
+        // are for the mouse - and then all but that line is taken away again, see `menu_peek`)
+        let begin = scene.overlays.len();
+        let mut peek: Option<(std::ops::Range<usize>, [f32; 4])> = None;
         let dim = self.text.plate(r, scene, 6);
         let sep = self.text.plate(r, scene, 9);
         scene.overlays.push((dim, [0.0, 0.0, f.width, f.height]));
@@ -956,6 +960,7 @@ impl Ui {
         for (k, &(id, label)) in items.iter().enumerate().skip(start).take(rows) {
             let ry = y + header_h + row_h * (k - start) as f32;
             let rect = [cx0, ry, cx1, ry + row_h - 4.0 * s];
+            let row_from = scene.overlays.len();
             // (lit by the mouse over it; by the keyboard's choice only when the keyboard chose)
             let lit = f.dropdown.is_none() && (over(rect) || (k == sel && f.menu_kbd && !any_hovered));
             // the light of the row eases in and out
@@ -1065,8 +1070,22 @@ impl Ui {
                 let d = clip_to(&self.text, desc, dpx as f32, avail);
                 self.put(r, scene, &d, dpx, MUTED, nx, cy + 10.0 * s);
             }
+            if f.menu_peek == Some(k) {
+                peek = Some((row_from..scene.overlays.len(), rect));
+            }
             self.menu_rects.push(rect);
             self.menu_ctl.push(ctl);
+        }
+        if let Some((row, rect)) = peek {
+            let line: Vec<_> = scene.overlays.drain(row).collect();
+            scene.overlays.truncate(begin);
+            let m = 6.0 * s;
+            let card = [rect[0] - m, rect[1] - m, rect[2] + m, rect[3] + m];
+            self.text.shadow(r, scene, card, CARD_R * s, 18.0 * s, 6.0 * s, 110);
+            self.text.rounded(r, scene, [card[0] - 1.0, card[1] - 1.0, card[2] + 1.0, card[3] + 1.0], CARD_R * s + 1.0, BORDER);
+            self.text.rounded(r, scene, card, CARD_R * s, PANEL);
+            scene.overlays.extend(line);
+            return;
         }
         // a drop-down over a row (the weather preset, the clouds): the entries under the
         // row's value as a select's in a page - over it where there is no room under

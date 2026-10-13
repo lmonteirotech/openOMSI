@@ -23,6 +23,9 @@ impl App {
             let moved = self.gfx.sim_view.people.follow_buses(vehicle_of, avatar, r, scene);
             if let (Some(h), Some(w), Some(p)) = (self.session.humans.as_mut(), self.world.as_ref(), self.player.as_ref()) {
                 h.sync_money(&mut self.gfx.sim_view.people, w, r, scene, &p.vehicle);
+            } else if self.player.is_none() {
+                // (the bus removed, the player on foot: its ticket blocks go with it)
+                crate::view_sync::people::drop_ticket_blocks(&mut self.gfx.sim_view.people, r, scene);
             }
             if let (Some(eye), Some(cam), Some(d)) = (self.session.on_foot.as_ref().and_then(|f| f.eye_aboard()), self.camera.as_mut(), moved) {
                 cam.position = eye + d;

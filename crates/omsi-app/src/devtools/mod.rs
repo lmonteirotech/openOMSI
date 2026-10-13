@@ -243,7 +243,8 @@ impl App {
     pub(crate) fn devtools_key(&mut self, code: KeyCode, pressed: bool, repeat: bool) -> bool {
         let ctrl = self.input.keys.contains(&KeyCode::ControlLeft) || self.input.keys.contains(&KeyCode::ControlRight);
         let shift = self.input.keys.contains(&KeyCode::ShiftLeft) || self.input.keys.contains(&KeyCode::ShiftRight);
-        if pressed && !repeat && code == KeyCode::KeyD && ctrl && shift {
+        // (not where the player bound Ctrl+Shift+D to something, #2478)
+        if pressed && !repeat && code == KeyCode::KeyD && ctrl && shift && !self.chord_bound(code, shift, ctrl, false) {
             self.toggle_devtools();
             return true;
         }

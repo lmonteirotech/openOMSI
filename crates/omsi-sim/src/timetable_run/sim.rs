@@ -63,6 +63,10 @@ struct Departure {
     /// by the day (`Schedule::runs`), so a session carries on past midnight.
     mask: i32,
     spawned: bool,
+    /// A night tour's trip after 24:00 as the day after the tour began sees it: at its time
+    /// less a day (24:30 = 00:30), run when yesterday's mask has the tour (`runs`). The
+    /// trip's own departure (24:30) is tonight's, reached by the tour's bus before midnight.
+    yesterday: bool,
 }
 
 /// What became of a departure that was due.
@@ -199,6 +203,11 @@ pub struct ScheduleSim {
     /// school); `set_day` moves them on at midnight.
     day: i32,
     day_bits: (i32, i32),
+    /// The day bits of the day before (`yesterday_bits`): whose night tours run on today.
+    yesterday_bits: (i32, i32),
+    /// Per departure: for a night trip of yesterday's tour (`Departure::yesterday`), the
+    /// same trip as tonight's (24:30), and the other way round.
+    night_twin: Vec<Option<usize>>,
     /// The weekday bit of the next day (night tours run on into it).
     next_day_bit: i32,
     /// Where today's midnight lies on the traffic's clock (`Traffic::day_time` counts on past

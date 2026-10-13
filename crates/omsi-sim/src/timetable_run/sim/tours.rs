@@ -165,7 +165,11 @@ impl ScheduleSim {
             (Some((line, tour)), Some(d)) => {
                 d.line.eq_ignore_ascii_case(line)
                     && d.tour.eq_ignore_ascii_case(tour)
-                    && self.player_departure.map(|t| (d.time - t).abs() < 30.0).unwrap_or(true)
+                    && self.player_departure.map(|t| {
+                        // (yesterday's night trips a day earlier: 00:30 is the trip of 24:30)
+                        let dt = (d.time - t).rem_euclid(DAY);
+                        dt < 30.0 || dt > DAY - 30.0
+                    }).unwrap_or(true)
             }
             _ => false,
         }
@@ -298,8 +302,10 @@ impl ScheduleSim {
         // Yesterday's night tour, still under way after midnight (its trips past 24:00 are
         // tonight's): its times a day earlier, so the duty goes on with the trip running
         // now. After a restart at 0:45 the night lines begun the day before could not be
-        // taken (#1576).
-        if !self.tour_runs_on(t, self.day_bits) && self.tour_runs_on(t, self.yesterday_bits()) && trips.iter().any(|p| p.departure >= DAY) && trips.last().is_some_and(|p| p.end - DAY > now) {
+        // taken (#1576). A tour that runs every night is yesterday's too while today's has not
+        // begun: at 03:25 the 22:00 tour's trip of 27:30 is the one at 03:30, not tomorrow's
+        // (#2166).
+        if (!self.tour_runs_on(t, self.day_bits) || trips[0].departure > now) && self.tour_runs_on(t, self.yesterday_bits()) && trips.iter().any(|p| p.departure >= DAY) && trips.last().is_some_and(|p| p.end - DAY > now) {
             for p in &mut trips {
                 p.departure -= DAY;
                 p.end -= DAY;
@@ -346,13 +352,36 @@ impl ScheduleSim {
             current.terminus,
             trips.get(trip_index + 1).map(|t| format!("{} at {}", t.name, hm(t.departure))).unwrap_or_else(|| "the end of the duty".into())
         );
-        Ok(PlayerDuty::new(
+        let unnumbered_public = self.unnumbered_public(&trips);
+        let mut duty = PlayerDuty::new(
             line_name,
             tour_name,
             trips,
             trip_index,
             first_trip,
             trip.map(|t| !t.trim().is_empty()).unwrap_or(false),
-        ))
+        );
+        duty.unnumbered_public = unnumbered_public;
+        Ok(duty)
+    }
+
+    /// The trips of `trips` without a line number that one of the map's depot files runs as
+    /// public trips ([`ibis::serves_unnumbered`]).
+    fn unnumbered_public(&self, trips: &[PlannedTrip]) -> Vec<String> {
+        let mut hofs: Vec<&Arc<omsi_vehicle::Hof>> = Vec::new();
+        for h in self.depots.values().flatten().filter_map(|v| v.2.as_ref()) {
+            if !hofs.iter().any(|x| Arc::ptr_eq(x, h)) {
+                hofs.push(h);
+            }
+        }
+        let mut out: Vec<String> = Vec::new();
+        for t in trips.iter().filter(|t| t.line.trim().is_empty()) {
+            let stops: Vec<&str> = t.stops.iter().map(|s| s.name.as_str()).collect();
+            if !out.contains(&t.name) && hofs.iter().any(|h| ibis::serves_unnumbered(h, &t.terminus, &stops)) {
+                log::info!("player duty: trip {} has no line number, but the depot file runs it as a public trip (line 000)", t.name);
+                out.push(t.name.clone());
+            }
+        }
+        out
     }
 }

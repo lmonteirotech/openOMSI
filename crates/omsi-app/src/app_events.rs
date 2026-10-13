@@ -276,6 +276,11 @@ impl ApplicationHandler for App {
                     self.on_right(state == ElementState::Pressed);
                 }
             }
+            // the mouse's side buttons (Mouse 4 and 5): keys of their own for keyboard.cfg (#2281)
+            WindowEvent::MouseInput { state, button: button @ (winit::event::MouseButton::Back | winit::event::MouseButton::Forward), .. } => {
+                let scan = if button == winit::event::MouseButton::Back { crate::keys::MOUSE_4 } else { crate::keys::MOUSE_5 };
+                self.mouse_side_button(scan, state == ElementState::Pressed);
+            }
             // (the middle button - the wheel pressed - turns the view as well: OMSI's pan)
             WindowEvent::MouseInput {
                 state,
@@ -559,7 +564,10 @@ impl App {
         // original fires while the mouse is dragged, with the notch as the
         // movement. Knobs, the sun blind and the ignition key are far easier to
         // set that way than by holding the button down and moving the mouse.
-        if self.menus.hover.is_some() && self.view != "free" {
+        // (not while the wheel is zooming: the zoom moved the switches under the cursor, and
+        // the wheel's next notch turned one instead of zooming on, #1224)
+        let zooming = wheel_goes_on(self.input.wheel_zoomed_at, std::time::Instant::now());
+        if self.menus.hover.is_some() && self.view != "free" && !zooming {
             let ray = self.camera.as_ref().zip(self.gfx.surface.as_ref())
                 .map(|(cam, s)| self.cockpit_cursor_ray(cam, (s.config.width, s.config.height)));
             if let (Some(p), Some((o, d, spread))) = (
@@ -584,6 +592,9 @@ impl App {
             }
         }
         let ctrl = self.input.keys.contains(&KeyCode::ControlLeft) || self.input.keys.contains(&KeyCode::ControlRight);
+        if matches!(self.view.as_str(), "driver" | "pax") && self.player.is_some() {
+            self.input.wheel_zoomed_at = Some(std::time::Instant::now());
+        }
         if self.view == "outside" && self.player.is_some() && ctrl {
             // Ctrl+wheel: the outside camera stays where it is and narrows its field of view
             // (a telephoto; OMSI's own zoom there only moves the camera, as the wheel does)
@@ -866,11 +877,20 @@ pub(crate) fn vehicle_temperatures(p: &Player) -> (f32, f32) {
 
 /// OMSI's information bar: the time, the speed, the kilometres driven this session and the
 /// bus's odometer, temperatures, the passengers aboard, and the trip with its next stop and delay.
-fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&crate::schedule::PlayerDuty>, passengers: Option<usize>, metres: f64) -> String {
+fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&crate::schedule::PlayerDuty>, passengers: Option<usize>, metres: f64, speed_limit: Option<f32>) -> String {
     let t = clock.time;
     let mut parts = vec![format!("{:02}:{:02}:{:02}", ((t / 3600.0) as i64).rem_euclid(24), ((t % 3600.0) / 60.0) as i64, (t % 60.0) as i64)];
     if let Some(p) = player {
         parts.push(crate::units::Units::now().speed_text(p.vehicle.physics.velocity_kmh().abs()));
+        // the road's speed limit, as the navigator's top bar has it (#2476: its sign there is small)
+        if let Some(v) = speed_limit {
+            let u = crate::units::Units::now();
+            parts.push(format!("{} {:.0}", omsi_ui::tr("Speed limit"), u.speed_limit(v)));
+        }
+        // a stop asked for, as OMSI's Shift+Z overlay says (#1767: seen from outside too)
+        if crate::navigator::stop_requested(&p.vehicle) {
+            parts.push(omsi_ui::tr("Stop requested").into_owned());
+        }
         parts.push(distance_driven(metres));
         // the bus's whole mileage, as OMSI's Shift+Z overlay reads it ("Mileometer", the
         // `kmcounter_*` the cockpit shows, whole kilometres and the metres of the fraction)
@@ -1050,6 +1070,30 @@ mod vr_mirror_tests {
         assert_eq!(vr_mirror_updates(&mut budget, 0.1, -1.0, 0), 0);
         assert_eq!(vr_mirror_updates(&mut budget, 0.1, 360.0, 0), 0);
         assert_eq!(budget, 0.0);
+    }
+}
+
+/// How long after a notch of the mouse wheel that zoomed the next one still counts as the same
+/// turn of the wheel (a turn sends its notches some 20-100 ms apart).
+const WHEEL_TURN: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// Whether a notch of the wheel at `now` goes on zooming, the last one having zoomed at
+/// `zoomed` (#1224).
+fn wheel_goes_on(zoomed: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    zoomed.is_some_and(|t| now.saturating_duration_since(t) < WHEEL_TURN)
+}
+
+#[cfg(test)]
+mod wheel_turn_tests {
+    /// A turn of the wheel that zooms goes on zooming over a switch; a notch a while later
+    /// over the switch turns the switch (#1224).
+    #[test]
+    fn a_turn_of_the_wheel_zooms_on() {
+        let t = std::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        assert!(!super::wheel_goes_on(None, t));
+        assert!(super::wheel_goes_on(Some(t), t + ms(80)));
+        assert!(!super::wheel_goes_on(Some(t), t + ms(600)));
     }
 }
 

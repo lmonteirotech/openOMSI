@@ -125,6 +125,23 @@ pub const MIN_PSNR_COLOUR: f64 = 33.0;
 /// The same for the alpha channel.
 pub const MIN_PSNR_ALPHA: f64 = 30.0;
 
+/// Largest picture (texels) whose colour swatches are checked one by one: an atlas of small
+/// parts is at most this size, and a bigger picture (a livery) whose swatch shifts is a
+/// detail of a few pixels on the screen, where keeping it uncompressed costs the most.
+const MAX_SWATCH_CHECK_TEXELS: u64 = 1024 * 1024;
+/// Largest colour shift (luma-weighted RMS, levels of 255) a flat swatch may get from
+/// compression (see [`bc::worst_patch_shift`]); more is a different colour (#2292).
+pub const MAX_SWATCH_SHIFT: f64 = 40.0;
+
+/// A compressed picture changes the colour of one of its small swatches.
+fn swatch_shifts(src: &[u8], blocks: &[u8], w: u32, h: u32, format: PixelFormat) -> bool {
+    if w as u64 * h as u64 > MAX_SWATCH_CHECK_TEXELS {
+        return false;
+    }
+    let dec = bc::decode(blocks, w, h, format.bc(false));
+    bc::worst_patch_shift(src, &dec, w, h) > MAX_SWATCH_SHIFT * MAX_SWATCH_SHIFT
+}
+
 fn psnr(sum_sq: f64, n: u64) -> f64 {
     if sum_sq <= 0.0 || n == 0 {
         return 99.0;
@@ -199,7 +216,7 @@ pub fn prepare_image_with(img: Image, o: GpuOptions) -> (TextureData, Prepared) 
     let format = if opaque { PixelFormat::Bc1 } else { PixelFormat::Bc3 };
     let (blocks, ec, ea) = bc::encode(&img.rgba, img.width, img.height, format.bc(false));
     info.psnr = (psnr(ec, texels), if opaque { 99.0 } else { psnr(ea, texels) });
-    if info.psnr.0 < MIN_PSNR_COLOUR || info.psnr.1 < MIN_PSNR_ALPHA {
+    if info.psnr.0 < MIN_PSNR_COLOUR || info.psnr.1 < MIN_PSNR_ALPHA || swatch_shifts(&img.rgba, &blocks, img.width, img.height, format) {
         info.rejected = true;
         return (TextureData::from_image(img), info);
     }
@@ -504,6 +521,34 @@ mod tests {
         let (t, info) = prepare_image_with(Image { width: w, height: h, rgba: noise, has_alpha: false }, GpuOptions { bc: true, compress: true });
         assert_eq!(t.format, PixelFormat::Rgba8);
         assert!(info.rejected);
+    }
+
+    #[test]
+    fn an_atlas_whose_swatch_changes_colour_stays_rgba() {
+        // a smooth picture with one block of four one-texel swatches (red, green, blue,
+        // yellow): the picture measures well, but no block can hold those four colours
+        let (w, h) = (128u32, 128u32);
+        let mut rgba: Vec<u8> = (0..w * h).flat_map(|i| [(i % w) as u8, (i / w) as u8, 100, 255]).collect();
+        let swatches = [[230u8, 14, 23], [40, 200, 60], [20, 30, 220], [240, 220, 30]];
+        for y in 0..4 {
+            for (x, c) in swatches.iter().enumerate() {
+                rgba[((y * w as usize) + 8 + x) * 4..][..3].copy_from_slice(c);
+            }
+        }
+        let on = GpuOptions { bc: true, compress: true };
+        let (t, info) = prepare_image_with(Image { width: w, height: h, rgba: rgba.clone(), has_alpha: false }, on);
+        assert!(info.psnr.0 > MIN_PSNR_COLOUR, "{info:?}");
+        assert_eq!(t.format, PixelFormat::Rgba8);
+        assert!(info.rejected);
+        // two swatches on a line are exact: compressed as before
+        for y in 0..4 {
+            for x in 0..4 {
+                let c = if x < 2 { swatches[0] } else { swatches[1] };
+                rgba[((y * w as usize) + 8 + x) * 4..][..3].copy_from_slice(&c);
+            }
+        }
+        let (t, _) = prepare_image_with(Image { width: w, height: h, rgba, has_alpha: false }, on);
+        assert_eq!(t.format, PixelFormat::Bc1);
     }
 
     #[test]

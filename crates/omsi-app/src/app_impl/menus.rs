@@ -341,6 +341,7 @@ impl App {
                 self.close_game_menu();
                 self.switch_vehicle();
             }
+            "switchto" => self.open_list(crate::game_lists::ListKind::SwitchTo),
             "later" | "earlier" | "later10" | "earlier10" => {
                 self.close_game_menu();
                 if self.net.lan.as_ref().map(|l| l.role == omsi_net::Role::Client).unwrap_or(false) {

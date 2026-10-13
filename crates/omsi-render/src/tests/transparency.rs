@@ -1,9 +1,12 @@
 use super::*;
 
-#[test]
-#[ignore = "requires a graphics adapter; run with --ignored on a GPU host"]
-fn invisible_blended_pixels_do_not_hide_a_textured_layer_behind_them() {
+/// A scene of a green wall behind two quads in one model, the near one an invisible
+/// `[matl_alpha] 2` pane (alpha 0 everywhere, depth written) drawn first: `second` is the
+/// far quad's material, `ordered` whether the model is drawn in model order. Returns the
+/// middle pixel for the classic, the Vanilla+ and the Enhanced picture at MSAA 1 and 4.
+fn behind_an_invisible_pane(second: impl Fn(&mut Renderer, &mut Scene) -> MaterialId, ordered: bool) -> Vec<([u8; 3], String)> {
     let adapter = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut out = Vec::new();
     for msaa in [1, 4] {
         let mut renderer = pollster::block_on(Renderer::new_with(
             &adapter,
@@ -20,37 +23,11 @@ fn invisible_blended_pixels_do_not_hide_a_textured_layer_behind_them() {
         ))
         .expect("test renderer");
         let mut scene = renderer.new_scene();
-        let texture = |renderer: &mut Renderer, scene: &mut Scene, rgba: Vec<u8>| {
-            renderer.add_texture(
-                scene,
-                &omsi_texture::Image {
-                    width: 1,
-                    height: 1,
-                    rgba,
-                    has_alpha: true,
-                },
-                false,
-            )
-        };
-        let clear = texture(&mut renderer, &mut scene, vec![255, 255, 255, 0]);
-        let blue = texture(&mut renderer, &mut scene, vec![0, 0, 255, 128]);
+        let clear = renderer.add_texture(&mut scene, &omsi_texture::Image { width: 1, height: 1, rgba: vec![255, 255, 255, 0], has_alpha: true }, false);
         let near = renderer.add_material(&mut scene, Some(clear), AlphaMode::Blend, [1.0; 4], true);
-        let far = renderer.add_material(&mut scene, Some(blue), AlphaMode::Blend, [1.0; 4], true);
-        let green = renderer.add_material(
-            &mut scene,
-            None,
-            AlphaMode::Opaque,
-            [0.0, 1.0, 0.0, 1.0],
-            true,
-        );
-        let quad = |y: f32, half: f32| {
-            [
-                Vec3::new(-half, y, -half),
-                Vec3::new(half, y, -half),
-                Vec3::new(half, y, half),
-                Vec3::new(-half, y, half),
-            ]
-        };
+        let far = second(&mut renderer, &mut scene);
+        let green = renderer.add_material(&mut scene, None, AlphaMode::Opaque, [0.0, 1.0, 0.0, 1.0], true);
+        let quad = |y: f32, half: f32| [Vec3::new(-half, y, -half), Vec3::new(half, y, -half), Vec3::new(half, y, half), Vec3::new(-half, y, half)];
         let wall = renderer.add_mesh(
             &mut scene,
             &MeshData {
@@ -63,8 +40,6 @@ fn invisible_blended_pixels_do_not_hide_a_textured_layer_behind_them() {
             },
         );
         renderer.add_instance(&mut scene, wall, DVec3::ZERO, Mat4::IDENTITY, vec![green]);
-        // Authored order puts the near blend first: invisible pixels must not write
-        // depth and reject the textured blend behind it, even with Z-write enabled.
         let layers = renderer.add_mesh(
             &mut scene,
             &MeshData {
@@ -76,36 +51,38 @@ fn invisible_blended_pixels_do_not_hide_a_textured_layer_behind_them() {
                 one_sided: false,
             },
         );
-        renderer.add_instance(
-            &mut scene,
-            layers,
-            DVec3::ZERO,
-            Mat4::IDENTITY,
-            vec![near, far],
-        );
-        let camera = Camera {
-            position: DVec3::ZERO,
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-            fov_deg: 90.0,
-            near: 0.1,
-            far: 100.0,
-        };
+        let i = renderer.add_instance(&mut scene, layers, DVec3::ZERO, Mat4::IDENTITY, vec![near, far]);
+        renderer.set_ordered(&mut scene, i, ordered);
+        let camera = Camera { position: DVec3::ZERO, yaw: 0.0, pitch: 0.0, roll: 0.0, fov_deg: 90.0, near: 0.1, far: 100.0 };
         for (classic, enhanced) in [(true, false), (false, false), (false, true)] {
-            let lighting = Lighting {
-                classic,
-                enhanced,
-                shadows: false,
-                fog_density: 0.0,
-                ..Default::default()
-            };
-            let rgba = renderer
-                .render_to_image(&mut scene, 64, 64, &camera, &lighting)
-                .unwrap();
+            let lighting = Lighting { classic, enhanced, shadows: false, fog_density: 0.0, ..Default::default() };
+            let rgba = renderer.render_to_image(&mut scene, 64, 64, &camera, &lighting).unwrap();
             let c = &rgba[(32 * 64 + 32) * 4..][..3];
-            assert!(c[2] > 60 && c[1] > 60 && c[0] < 20, "invisible pane hid the blue layer: {c:?}; classic {classic}, enhanced {enhanced}, MSAA {msaa}");
+            out.push(([c[0], c[1], c[2]], format!("classic {classic}, enhanced {enhanced}, MSAA {msaa}")));
         }
+    }
+    out
+}
+
+/// Omsi.exe draws `[matl_alpha] 2` with alpha blending, the alpha test off and the depth
+/// written (0x7fd6c4: ALPHATESTENABLE 0, ZWRITEENABLE unless `[matl_noZwrite]`): a pane
+/// invisible all over still hides what its model draws behind it later. Content uses it
+/// as a mask - a scroll box whose lines vanish under an invisible cover (#2059).
+#[test]
+#[ignore = "requires a graphics adapter; run with --ignored on a GPU host"]
+fn an_invisible_pane_hides_what_its_model_draws_behind_it_later() {
+    // a blended layer behind it, in the order the model lists them
+    let blue = |r: &mut Renderer, s: &mut Scene| {
+        let t = r.add_texture(s, &omsi_texture::Image { width: 1, height: 1, rgba: vec![0, 0, 255, 128], has_alpha: true }, false);
+        r.add_material(s, Some(t), AlphaMode::Blend, [1.0; 4], true)
+    };
+    for (c, case) in behind_an_invisible_pane(blue, false) {
+        assert!(c[1] > 100 && c[2] < 40, "the blue layer showed through the invisible pane: {c:?}; {case}");
+    }
+    // the scroll box: an opaque disc behind the cover, the model drawn in its order
+    let red = |r: &mut Renderer, s: &mut Scene| r.add_material(s, None, AlphaMode::Opaque, [1.0, 0.0, 0.0, 1.0], true);
+    for (c, case) in behind_an_invisible_pane(red, true) {
+        assert!(c[1] > 100 && c[0] < 40, "the disc showed through the invisible cover: {c:?}; {case}");
     }
 }
 

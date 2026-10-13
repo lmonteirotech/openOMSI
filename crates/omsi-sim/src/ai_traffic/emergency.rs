@@ -54,6 +54,16 @@ pub const RESERVE_REACH: f32 = 45.0;
 /// ... and kept while it is no further away than this (slowing down for something moves it
 /// back a little).
 pub const RESERVE_KEEP: f32 = 65.0;
+/// A junction is kept only for an emergency vehicle that comes: one that has stood this
+/// long before its entry (s) lets it go - at a red light, at a stop, in a queue - and gets it
+/// again once it moves (#2431). Kept for one standing, a junction stood still at every green
+/// for as long as a siren - or a player's bus whose script sets `TrafficPriority` - waited
+/// within `RESERVE_KEEP` of it (Omsi.exe keeps no junction for anybody).
+/// An AI one standing at its line (held by the junction itself: somebody in it, people on
+/// its crossing, a full exit) keeps it until `STUCK_RELEASE_ALL`.
+pub const STANDING_LETS_GO: f32 = 5.0;
+/// An emergency vehicle whose front is this close to a junction's entry (m) stands at its line.
+pub const AT_LINE: f32 = 3.0;
 /// Against a stop aspect the emergency vehicle crosses at this speed at most (m/s).
 pub const CRAWL: f32 = 5.0;
 /// A car moving over for an emergency vehicle rolls at this speed at most (m/s).
@@ -101,6 +111,9 @@ pub struct Siren {
     pub way: Vec<(usize, f32)>,
     pub speed: f32,
     pub stopped: f32,
+    /// The AI drives it (the player's vehicle and a LAN player's stand where their drivers
+    /// stop them: for a light, at a stop).
+    pub ai: bool,
     /// Where across its lane it will be (m, + right), and the corridor it can take there.
     pub lateral: f32,
     pub corridor: Option<f32>,
@@ -111,6 +124,16 @@ pub struct Siren {
     /// How far its body reaches behind its origin (m), and its odometer (the player's: 0).
     pub tail: f32,
     pub odometer: f32,
+}
+
+impl Siren {
+    /// Has it stood before a junction `entry` m off (from its front) long enough to let it go
+    /// (`STANDING_LETS_GO`)? An AI one standing at the line waits for the junction itself
+    /// (it may cross the red light there): it lets go only after `STUCK_RELEASE_ALL`.
+    pub fn lets_go(&self, entry: f32) -> bool {
+        let at_line = self.ai && entry < AT_LINE;
+        self.stopped > STANDING_LETS_GO && (!at_line || self.stopped > STUCK_RELEASE_ALL)
+    }
 }
 
 /// What a car is asked this step: to make way for siren `from`, whose front is `gap` m
@@ -148,6 +171,10 @@ pub struct Reservation {
     pub group: Vec<usize>,
     /// The owner's way through it.
     pub movement: Vec<usize>,
+    /// The lanes a car must not drive into while it is kept (sorted): the owner's way
+    /// through and the lanes that cross or join it. A car whose way through the junction
+    /// meets none of them (a right turn on the far side) goes on.
+    pub blocks: Vec<usize>,
     /// It crosses against a stop aspect: at `CRAWL` until the reservation ends.
     pub crawl: bool,
     /// Its body has been on the lanes kept, and since where it is off them (odometer, or for
@@ -253,6 +280,7 @@ impl TrafficSim {
                 way,
                 speed: st.speed,
                 stopped: c.stopped,
+                ai: true,
                 lateral: st.lateral_target,
                 corridor: self.corridor_offset(st.lane),
                 half_width: c.half_width,
@@ -270,6 +298,7 @@ impl TrafficSim {
                     way: u.lanes.iter().map(|&(l, d)| (l, d - u.half_len)).collect(),
                     speed: u.speed,
                     stopped: still,
+                    ai: false,
                     lateral: 0.0,
                     corridor: None,
                     half_width: b.3,
@@ -452,9 +481,10 @@ impl TrafficSim {
                 };
                 return on || !gone;
             }
-            // not in it yet: kept while it still comes (it may have turned away)
+            // not in it yet: kept while it still comes (it may have turned away, or stand
+            // before it - see `STANDING_LETS_GO`)
             let entry = s.way.iter().find(|w| r.movement.contains(&w.0)).map(|w| w.1);
-            entry.is_some_and(|e| e <= RESERVE_KEEP)
+            entry.is_some_and(|e| e <= RESERVE_KEEP && !s.lets_go(e))
         });
         em.sirens = sirens;
     }
@@ -518,7 +548,7 @@ impl TrafficSim {
         for s in &sirens {
             let Some(jn) = self.junction_ahead(&s.way) else { continue };
             let entry = jn.lanes[0].1;
-            if !jn.inside && entry > RESERVE_REACH {
+            if !jn.inside && (entry > RESERVE_REACH || s.lets_go(entry)) {
                 continue;
             }
             let l0 = jn.lanes[0].0;
@@ -533,8 +563,11 @@ impl TrafficSim {
             group.extend(jn.lanes.iter().map(|x| x.0));
             group.sort_unstable();
             group.dedup();
-            let movement = jn.lanes.iter().map(|x| x.0).collect();
-            asks.push((jn.inside, s.id, Reservation { owner: s.id, object, group, movement, crawl: false, entered: false, left_at: None, left_pos: None, leaders: Vec::new() }));
+            let movement: Vec<usize> = jn.lanes.iter().map(|x| x.0).collect();
+            let mut blocks: Vec<usize> = movement.iter().flat_map(|&l| std::iter::once(l).chain(self.net.crossings[l].iter().map(|c| c.other))).collect();
+            blocks.sort_unstable();
+            blocks.dedup();
+            asks.push((jn.inside, s.id, Reservation { owner: s.id, object, group, movement, blocks, crawl: false, entered: false, left_at: None, left_pos: None, leaders: Vec::new() }));
         }
         em.sirens = sirens;
         asks.sort_by_key(|a| (!a.0, a.1));
@@ -550,8 +583,9 @@ impl TrafficSim {
     }
 
     /// Car `i` at junction `jn`: does a junction kept for an emergency vehicle hold it at its
-    /// entry? Not when it is in the junction already or has claimed its way through, leads
-    /// the emergency vehicle through, or drives on a ring. The owner's id.
+    /// entry? Only where its way meets the emergency vehicle's (`Reservation::blocks`); not
+    /// when it is in the junction already or has claimed its way through, leads the
+    /// emergency vehicle through, or drives on a ring. The owner's id.
     pub fn emergency_entry_hold(&self, i: usize, jn: &Junction, committed: bool) -> Option<u64> {
         if self.emergency.reservations.is_empty() || jn.inside || committed {
             return None;
@@ -563,7 +597,7 @@ impl TrafficSim {
         self.emergency
             .reservations
             .iter()
-            .find(|r| r.owner != c.id && !r.leaders.contains(&c.id) && jn.lanes.iter().any(|x| r.group.binary_search(&x.0).is_ok()))
+            .find(|r| r.owner != c.id && !r.leaders.contains(&c.id) && jn.lanes.iter().any(|x| r.blocks.binary_search(&x.0).is_ok()))
             .map(|r| r.owner)
     }
 

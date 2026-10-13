@@ -5,6 +5,8 @@
 // A headlamp's intensity towards `t` (from the lamp) by the angles of a road lamp, not
 // around its axis: wide across, brightest just under the lamp's horizon where it reaches
 // far down the road, weak straight down, and with a low beam a sharp cut-off above it.
+// `dir` is the lamp's axis in its vehicle's floor: its rise tilts the horizon with the
+// vehicle, up a ramp and down (#1897).
 fn headlamp(t: vec3<f32>, dir: vec3<f32>, low: bool) -> f32 {
     let fwd = normalize(dir.xy + vec2<f32>(1e-6, 0.0));
     let ahead = dot(t.xy, fwd);
@@ -13,7 +15,10 @@ fn headlamp(t: vec3<f32>, dir: vec3<f32>, low: bool) -> f32 {
     }
     let across = abs(t.x * fwd.y - t.y * fwd.x) / ahead;
     let wide = 0.12 * smoothstep(1.0, 0.45, across) + 0.88 * exp(-across * across / 0.06);
-    let drop = -t.z / max(length(t.xy), 1e-3);
+    let rise = t.z / max(length(t.xy), 1e-3);
+    let tilt = dir.z / max(length(dir.xy), 1e-3);
+    // (the tangent of the angle under that horizon)
+    let drop = (tilt - rise) / max(1.0 + rise * tilt, 1e-3);
     // full out to where the road is 0.06 under the lamp's horizon, then less as the cube of
     // the drop and a little more: the road is lit evenly from the bumper on, a little
     // brighter as far as the beam reaches, and not as one hot pool where its axis lands
