@@ -5,6 +5,7 @@
 pub mod ailists;
 pub mod calendar;
 pub mod global;
+pub mod package;
 pub mod terrain;
 pub mod tile;
 

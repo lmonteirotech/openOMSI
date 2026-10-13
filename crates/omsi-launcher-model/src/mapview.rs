@@ -124,6 +124,51 @@ pub fn export(map: &str, global: &Path, date: &str, trip: &str, tolerance: f32) 
         "lo": rel(roads.lo), "hi": rel(roads.hi),
         "roads": list, "route": route, "stops": stops, "entries": entries,
         "colors": [css(casing), css(road), css(main), css(red)],
+        "package": package_view(global, o, roads.lo, roads.hi, tolerance),
+    })
+}
+
+/// How far past the roads' 1 - 99 % box the package's surface is read: the page can be dragged
+/// to the far corners, and a river or a shore runs on beyond the last road.
+const PACKAGE_MARGIN: f64 = 2500.0;
+
+/// The map's package (`Maps/<Map>/openomsi-realmap`, docs/MAP_PACKAGE.md) as the page draws it
+/// under the roads: the filling triangles by class and the rivers, rail and borders, in metres
+/// from `origin` like the roads, and the manifest's dark colours as CSS. `null` for a map
+/// without a package, so the picture is what it always was.
+fn package_view(global: &Path, origin: DVec2, lo: DVec2, hi: DVec2, tolerance: f32) -> serde_json::Value {
+    use omsi_map::package::{self, Package};
+    use serde_json::json;
+    let Some(map_dir) = global.parent() else { return serde_json::Value::Null };
+    let Some(pkg) = Package::open(map_dir) else { return serde_json::Value::Null };
+    let m = DVec2::splat(PACKAGE_MARGIN);
+    let (a, b) = (lo - m, hi + m);
+    let layers = pkg.layers(Some(((a.x, a.y), (b.x, b.y))));
+    let r1 = |v: f64| (v * 10.0).round() / 10.0;
+    let at = |q: (f64, f64)| [r1(q.0 - origin.x), r1(q.1 - origin.y)];
+    let fills: Vec<Vec<f64>> = layers.fills.iter().map(|list| list.iter().flat_map(|t| t.iter().flat_map(|q| at(*q))).collect()).collect();
+    let lines: Vec<serde_json::Value> = layers
+        .lines
+        .iter()
+        .filter_map(|l| {
+            let v: Vec<Vec3> = l.points.iter().map(|q| Vec3::new((q.0 - origin.x) as f32, (q.1 - origin.y) as f32, 0.0)).collect();
+            let p: Vec<f64> = simplify(&v, tolerance).iter().flat_map(|q| [r1(q.x as f64), r1(q.y as f64)]).collect();
+            (p.len() >= 4).then(|| json!({ "c": l.class, "w": l.width, "p": p }))
+        })
+        .collect();
+    let hex = |c: package::Rgb| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    let d = pkg.dark;
+    log::info!("map package \"{}\": {} chunks, {} triangles, {} lines near the roads", pkg.name, pkg.chunks(), fills.iter().map(|f| f.len() / 6).sum::<usize>(), lines.len());
+    json!({
+        "name": pkg.name,
+        "credit": pkg.credit,
+        "fills": fills,
+        "lines": lines,
+        "colors": {
+            "land": hex(d.land), "water": hex(d.water), "river": hex(d.river), "green": hex(d.green), "grass": hex(d.grass),
+            "forest": hex(d.forest), "sport": hex(d.sport), "farm": hex(d.farm), "built": hex(d.built),
+            "rail": hex(d.rail), "rail_edge": hex(d.rail_edge), "border": hex(d.border),
+        },
     })
 }
 
@@ -287,4 +332,34 @@ fn read_map(look: &Look) -> Roads {
         lo.x, lo.y, hi.x, hi.y
     );
     Roads { roads, net: Arc::new(net), lanes: by_path, splines: by_spline, origin, lo, hi, entries, objects }
+}
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+
+    /// With a real map that carries a package (`OMSI_PACKAGE_MAP` = the path of its `global.cfg`): the
+    /// export holds the surface, in metres from the origin, and says how big it is.
+    #[test]
+    #[ignore = "needs a map with a package: OMSI_PACKAGE_MAP=<path of its global.cfg>"]
+    fn the_package_of_a_real_map_is_exported() {
+        let Some(global) = std::env::var_os("OMSI_PACKAGE_MAP").map(PathBuf::from) else { return };
+        let cfg = omsi_map::GlobalCfg::load(&global).expect("global.cfg");
+        omsi_map::configure_grid(&cfg);
+        let big = 1.0e12;
+        let v = package_view(&global, DVec2::ZERO, DVec2::splat(-big), DVec2::splat(big), 1.2);
+        assert!(!v.is_null(), "no package found beside {}", global.display());
+        let triangles: usize = v["fills"].as_array().unwrap().iter().map(|f| f.as_array().unwrap().len() / 6).sum();
+        let lines = v["lines"].as_array().unwrap().len();
+        println!("package \"{}\": {triangles} triangles, {lines} lines, {} bytes of JSON", v["name"], v.to_string().len());
+        assert!(triangles > 0);
+    }
+
+    #[test]
+    fn a_map_without_a_package_exports_null() {
+        let dir = std::env::temp_dir().join("omsi-mapview-no-package");
+        let _ = std::fs::create_dir_all(&dir);
+        let v = package_view(&dir.join("global.cfg"), DVec2::ZERO, DVec2::splat(-10.0), DVec2::splat(10.0), 1.2);
+        assert!(v.is_null());
+    }
 }

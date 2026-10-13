@@ -34,6 +34,65 @@ function onRoute(d) {
   return d;
 }
 
+
+// The map package's surface (`d.package`, see docs/MAP_PACKAGE.md): its triangles and lines as
+// Path2D objects in map metres, made once and drawn under a transform that follows the view.
+const FILL_KEYS = ['water', 'green', 'built', 'grass', 'forest', 'sport', 'farm']; // by class
+const FILL_ORDER = [2, 6, 3, 1, 4, 5, 0]; // under everything: built-up land first, water last
+
+function surfacePaths(pkg) {
+  if (pkg.paths) return pkg.paths;
+  const fills = pkg.fills.map((f) => {
+    const path = new Path2D();
+    for (let i = 0; i + 5 < f.length; i += 6) {
+      path.moveTo(f[i], f[i + 1]);
+      path.lineTo(f[i + 2], f[i + 3]);
+      path.lineTo(f[i + 4], f[i + 5]);
+      path.closePath();
+    }
+    return path;
+  });
+  // a river's width tells river from stream; the railway and the borders are one path each
+  const lines = { river: new Path2D(), stream: new Path2D(), rail: new Path2D(), border: new Path2D() };
+  for (const l of pkg.lines) {
+    const path = l.c === 0 ? (l.w >= 5 ? lines.river : lines.stream) : l.c === 1 ? lines.rail : l.c === 2 ? lines.border : null;
+    if (!path) continue;
+    for (let i = 0; i + 1 < l.p.length; i += 2) (i ? path.lineTo : path.moveTo).call(path, l.p[i], l.p[i + 1]);
+  }
+  return (pkg.paths = { fills, lines });
+}
+
+/** The surface under the roads: ground, areas, then rivers, rail and borders. */
+function drawSurface(g, pkg, v, W, H) {
+  const c = pkg.colors;
+  const { fills, lines } = surfacePaths(pkg);
+  g.fillStyle = c.land;
+  g.fillRect(0, 0, W, H);
+  g.save();
+  // map metres (y up) onto the canvas: widths below are pixels, so they are scaled by `mpp`
+  g.translate(W / 2 - v.cx / v.mpp, H / 2 + v.cy / v.mpp);
+  g.scale(1 / v.mpp, -1 / v.mpp);
+  g.lineCap = g.lineJoin = 'round';
+  for (const k of FILL_ORDER) {
+    g.fillStyle = g.strokeStyle = c[FILL_KEYS[k]];
+    g.fill(fills[k]);
+    g.lineWidth = 0.8 * v.mpp; // (no seams between neighbouring triangles)
+    g.stroke(fills[k]);
+  }
+  const stroke = (path, color, px) => {
+    g.strokeStyle = color;
+    g.lineWidth = px * v.mpp;
+    g.stroke(path);
+  };
+  stroke(lines.river, c.river, 6);
+  stroke(lines.stream, c.river, 2.4);
+  stroke(lines.rail, c.rail_edge, 3.4);
+  stroke(lines.rail, c.rail, 1.6);
+  g.globalAlpha = 0.7;
+  stroke(lines.border, c.border, 1.2);
+  g.restore();
+}
+
 function load(map, date, trip) {
   const key = `${map}|${date}|${trip}`;
   if (!cache.has(key)) cache.set(key, call('route_map', { map, date, trip }).then(onRoute, (e) => ({ error: e.message })));
@@ -92,6 +151,7 @@ export function RouteMap({ map, date, trip, stops = [], entry = -1, onEntry, hei
       g.beginPath();
       for (let i = 0; i < p.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, X(p[i]), Y(p[i + 1]));
     };
+    if (d.package) drawSurface(g, d.package, v, W, H);
     g.lineCap = g.lineJoin = 'round';
     const [casing, road, main, red] = d.colors;
     for (let pass = 0; pass < 2; pass++) {
@@ -239,6 +299,7 @@ export function RouteMap({ map, date, trip, stops = [], entry = -1, onEntry, hei
     <canvas ref=${cv}></canvas>
     ${!data && html`<div class="state"><${Spinner} /> ${t('Reading the map…')}</div>`}
     ${data?.error && html`<div class="state">${data.error}</div>`}
+    ${data?.package?.credit && html`<div class="credit">${data.package.credit}</div>`}
     ${data && !data.error && html`<div class="legend">${t('{roads} roads | {stops} stops | {entries} entry points', { roads: data.roads.length, stops: data.stops.length, entries: data.entries.length })}</div>`}
   </div>`;
 }

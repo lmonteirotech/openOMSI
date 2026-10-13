@@ -403,6 +403,7 @@ table.table { width: 100%; border-collapse: collapse; }
 .routemap canvas { width: 100%; height: 100%; display: block; }
 .routemap .state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); pointer-events: none; }
 .routemap .legend { position: absolute; left: 10px; bottom: 8px; font-size: 11.5px; color: var(--text-2); background: rgba(14, 14, 14, 0.8); padding: 3px 8px; border-radius: 4px; pointer-events: none; }
+.routemap .credit { position: absolute; right: 10px; bottom: 8px; max-width: 55%; font-size: 10.5px; color: var(--text-2); background: rgba(14, 14, 14, 0.8); padding: 2px 7px; border-radius: 4px; pointer-events: none; text-align: right; }
 
 .viewer canvas { width: 100%; height: 100%; display: block; cursor: grab; object-fit: cover; }
 .viewer .state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); pointer-events: none; }
