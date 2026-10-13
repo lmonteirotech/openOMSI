@@ -524,14 +524,6 @@ impl Navigator {
         self.global_version += 1;
     }
 
-    /// The map's package, given at once (an offscreen picture reads it on its own thread).
-    pub fn set_surface(&mut self, surface: Option<omsi_map::package::Package>) {
-        if let Some(s) = surface {
-            self.surface = Some(std::sync::Arc::new(s));
-            self.surface_version += 1;
-        }
-    }
-
     /// The places of every object on the map (stops beyond the loaded tiles), once read.
     pub fn places(&self) -> Option<&HashMap<i64, DVec3>> {
         self.global.as_ref().map(|_| &*self.stop_pos)
@@ -1085,21 +1077,8 @@ impl Navigator {
 
         // --- the map camera (world coordinates relative to the anchor)
         let anchor = self.roads.as_ref().map(|r| r.anchor).unwrap_or(f.bus.truncate());
-        // --- the map's surface (buffer 6): built again when it arrives, the look changes or the anchor moved
-        let mut surface_verts = None;
-        if let (true, Some(sf)) = (self.show_surface, self.surface.clone()) {
-            let key = self.surface_version * 2 + self.light as u64;
-            if self.surface_mesh.map(|m| m.0 != key || m.1 != anchor).unwrap_or(true) {
-                let mut p = Painter::new();
-                let t0 = std::time::Instant::now();
-                build_surface(&mut p, &sf, anchor, Some((anchor, ROAD_RADIUS * 1.4)), self.light);
-                if omsi_cfg::flags::OMSI_DEBUG_NAV.is_set() {
-                    log::info!("navigator: surface around ({:.0}, {:.0}) in {:.1} ms: {} vertices", anchor.x, anchor.y, t0.elapsed().as_secs_f64() * 1000.0, p.verts.len());
-                }
-                self.surface_mesh = Some((key, anchor, p.len()));
-                surface_verts = Some(p.verts);
-            }
-        }
+        // --- the map's surface (buffer 6)
+        let surface_verts = self.minimap_surface(anchor);
         let surface_n = if self.show_surface { self.surface_mesh.map(|m| m.2).unwrap_or(0) } else { 0 };
         let rel = |p: DVec3| Vec3::new((p.x - anchor.x) as f32, (p.y - anchor.y) as f32, 0.0);
         let hd = self.cam_heading.to_radians();
@@ -1494,7 +1473,7 @@ impl<'a> NavFrame<'a> {
 mod roads;
 pub(crate) use roads::*;
 mod surface;
-use surface::{build_surface, ground};
+use surface::ground;
 mod city_map;
 pub use city_map::*;
 #[cfg(test)]

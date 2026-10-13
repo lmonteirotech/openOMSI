@@ -2501,9 +2501,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
             _ => "all",
         },
         b("nav_arrows", false),
-        b("nav_ai", true),
-        b("nav_surface", true),
-        b("nav_light", false),
+        b("nav_ai", true), b("nav_surface", true), b("nav_light", false),
         b("get_up", false),
         match v.get("time_speed") {
             Some(Value::String(x)) => x.trim().parse::<f64>().map(|x| x.clamp(1.0, 30.0)).unwrap_or(1.0),

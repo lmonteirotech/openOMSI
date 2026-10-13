@@ -25,7 +25,7 @@ pub struct CityMap {
     /// The roads mesh (buffer 3): the map version it was built for, its size and anchor.
     roads: Option<(u64, u32, DVec2)>,
     /// The surface mesh (buffer 7): the surface version it was built for, its size and anchor.
-    surface: Option<(u64, u32, DVec2)>,
+    pub(super) surface: Option<(u64, u32, DVec2)>,
     /// The route mesh (buffer 4): the route, traffic, arrow spacing and roads versions it
     /// was built for, and its size.
     route: ((u64, u64, u32, u64), u32),
@@ -341,21 +341,8 @@ impl Navigator {
             }
         }
         let anchor = self.city.roads.map(|r| r.2).unwrap_or(f.bus.truncate());
-        // the map's surface (buffer 7), once per surface, look and anchor
-        let mut surface_verts = None;
-        if let (true, Some(sf)) = (self.show_surface, self.surface.clone()) {
-            let key = self.surface_version * 2 + self.light as u64;
-            if self.city.surface.map(|m| m.0 != key || m.2 != anchor).unwrap_or(true) {
-                let mut p = Painter::new();
-                let t0 = std::time::Instant::now();
-                build_surface(&mut p, &sf, anchor, None, self.light);
-                if omsi_cfg::flags::OMSI_DEBUG_NAV.is_set() {
-                    log::info!("navigator: the city map's surface in {:.1} ms: {} vertices", t0.elapsed().as_secs_f64() * 1000.0, p.verts.len());
-                }
-                self.city.surface = Some((key, p.len(), anchor));
-                surface_verts = Some(p.verts);
-            }
-        }
+        // the map's surface (buffer 7)
+        let surface_verts = self.city_surface(anchor);
         let surface_n = if self.show_surface { self.city.surface.map(|m| m.1).unwrap_or(0) } else { 0 };
         let rel = |q: DVec3| Vec3::new((q.x - anchor.x) as f32, (q.y - anchor.y) as f32, 0.0);
         // the whole route (buffer 4): the part driven grey, the rest by how busy it is,
@@ -393,11 +380,7 @@ impl Navigator {
         let win = Rect::new(0.0, 0.0, w, h);
         let mut bg = Painter::new();
         // (the opacity setting the map's ground too; the roads, names and header stay solid)
-        let ground = match (self.show_surface, self.surface.as_ref()) {
-            (true, Some(sf)) => ground(sf, self.light).alpha(crate::ui::backdrop(self.opacity).min(1.0)),
-            _ => Color::rgba(18, 18, 18, crate::ui::backdrop(self.opacity).min(1.0)),
-        };
-        bg.rounded(win, 8.0 * s, ground);
+        bg.rounded(win, 8.0 * s, self.city_ground());
         let n_bg = bg.len();
         // traffic: blue dots, the public transport in its colours with its line (as on the
         // small map)
@@ -544,10 +527,7 @@ impl Navigator {
             self.city.buttons.push((r, id));
             bx -= bs + 8.0 * s;
         }
-        // the data's attribution (the package's licence asks for it)
-        if let (true, Some(sf)) = (self.show_surface, self.surface.as_ref().filter(|s| !s.credit.is_empty())) {
-            ui.text(&mut self.atlas, &self.fonts, &sf.credit, 10.5 * s, Weight::Medium, Vec2::new(w - 12.0 * s, h - 8.0 * s), Align::Right, if self.light { Color::hex(0x5b564c).alpha(0.8) } else { TEXT_DIM.alpha(0.7) });
-        }
+        self.draw_credit(&mut ui, w, h, s);
         // a scale bar, bottom left
         let nice = [10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0];
         let metres = nice.iter().copied().find(|m| m / self.city.mpp > 70.0 * s as f64).unwrap_or(5000.0);
