@@ -540,6 +540,26 @@ mod tests {
     }
 
     #[test]
+    fn the_synthetic_example_of_the_docs_reads() {
+        // docs/examples/openomsi-realmap: made up for the tests, in the tile grid of the tutorial map
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples");
+        let p = Package::open(&dir).expect("docs/examples/openomsi-realmap is a package");
+        assert_eq!(p.name, "Synthetic example");
+        assert_eq!(p.chunks(), 1);
+        let l = p.layers(None);
+        assert_eq!(l.fills[FILL_WATER as usize].len(), 14);
+        for class in [FILL_GREEN, FILL_BUILT, FILL_GRASS, FILL_FOREST, FILL_SPORT, FILL_FARM] {
+            assert_eq!(l.fills[class as usize].len(), 2, "class {class}");
+        }
+        let classes: Vec<u8> = l.lines.iter().map(|x| x.class).collect();
+        assert_eq!(classes, vec![LINE_RIVER, LINE_RIVER, LINE_RAIL, LINE_BORDER]);
+        // the file's origin is the south-west corner of the tutorial map's tiles (-300, -600): tile (-1, -2)
+        let (x, y) = crate::tile_local_to_world(-1, -2, 0.0, 0.0);
+        let first = l.fills[FILL_WATER as usize][0][0];
+        assert!((first.0 - (x + 420.0)).abs() < 1e-3 && (first.1 - (y + 800.0)).abs() < 1e-3, "{first:?}");
+    }
+
+    #[test]
     fn colours_read_as_hex() {
         assert_eq!(parse_color("#102030"), Some([0x10, 0x20, 0x30]));
         assert_eq!(parse_color("#12"), None);
